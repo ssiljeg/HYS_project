@@ -20,23 +20,16 @@ These are too large for GitHub and are excluded by `.gitignore`:
 
 | File | Needed for | Where it goes |
 |---|---|---|
-| `best_model.pt` (~400 MB) | Real model predictions. Without it the apps show demo output | Project root. Download it from this repo's Releases page |
+| `best_model.pt` (~400 MB) | Real model predictions. Without it the app shows demo output | Project root. Download it from this repo's Releases page |
 | Training data (~20 GB of parquet chunks) | Training and `evaluator.py` only | `data/multimodal_spectroscopic_dataset/` |
 | `nmrshiftdb2withsignals.sd` | Only to rebuild the search DB (the built `nmrshiftdb.parquet` is included) | `search_data/` |
 
 ## Running
 
-**Web app (recommended):**
 ```bash
 python server.py        # then open http://localhost:5000
 ```
-The web app accepts annotated ¹H peaks such as `7.34 (d, J=8.1 Hz, 1H)`.
-
-**Desktop app (Tkinter):**
-```bash
-python app.py
-```
-The desktop app reuses `server.py`'s database lookup and model code.
+The app accepts annotated ¹H peaks such as `7.34 (d, J=8.1 Hz, 1H)`.
 
 If `search_data/nmrshiftdb.parquet` is missing, rebuild it once from the SDF:
 ```bash
@@ -49,7 +42,6 @@ python setup_db.py
 |---|---|
 | `server.py` | Flask web app. Peak parsing, DB lookup, model inference |
 | `templates/index.html` | Web UI |
-| `app.py` | Desktop UI (Tkinter) |
 | `model.py` | `SpectraToSmilesModel`: peak/IR encoder + Transformer decoder |
 | `evaluator.py` | Beam search generation and validity/accuracy metrics |
 | `preprocessor.py` | Peaks → tensors, SMILES → token ids, `SpectraToSmilesDataset` |
