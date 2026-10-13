@@ -90,13 +90,14 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device, sampling_rate
                 mininterval=1.0, dynamic_ncols=False, ncols=100)
 
     for batch_idx, batch in enumerate(pbar):
-        h_peaks, h_mask, c_peaks, c_mask, ir, target_ids = batch
+        h_peaks, h_mask, c_peaks, c_mask, ir, formula, target_ids = batch
 
         h_peaks = h_peaks.to(device)
         h_mask = h_mask.to(device)
         c_peaks = c_peaks.to(device)
         c_mask = c_mask.to(device)
         ir = ir.to(device)
+        formula = formula.to(device)
         target_ids = target_ids.to(device)
 
         optimizer.zero_grad()
@@ -108,10 +109,10 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device, sampling_rate
         use_sampling = (sampling_rate > 0.0) and (torch.rand(1).item() < SCHEDULED_SAMPLING_BATCH_FRACTION)
 
         if not use_sampling:
-            logits = model(h_peaks, h_mask, c_peaks, c_mask, ir, target_ids)
+            logits = model(h_peaks, h_mask, c_peaks, c_mask, ir, target_ids, formula=formula)
             targets = target_ids[:, 1:]
         else:
-            memory, padding_mask = model.encode(h_peaks, h_mask, c_peaks, c_mask, ir)
+            memory, padding_mask = model.encode(h_peaks, h_mask, c_peaks, c_mask, ir, formula)
 
             seq_len = target_ids.size(1)
             decoder_input = target_ids[:, :1]
@@ -163,16 +164,17 @@ def evaluate(model, dataloader, loss_fn, device):
 
     with torch.no_grad():
         for batch in dataloader:
-            h_peaks, h_mask, c_peaks, c_mask, ir, target_ids = batch
+            h_peaks, h_mask, c_peaks, c_mask, ir, formula, target_ids = batch
 
             h_peaks = h_peaks.to(device)
             h_mask = h_mask.to(device)
             c_peaks = c_peaks.to(device)
             c_mask = c_mask.to(device)
             ir = ir.to(device)
+            formula = formula.to(device)
             target_ids = target_ids.to(device)
 
-            logits = model(h_peaks, h_mask, c_peaks, c_mask, ir, target_ids)
+            logits = model(h_peaks, h_mask, c_peaks, c_mask, ir, target_ids, formula=formula)
             targets = target_ids[:, 1:]
 
             loss = loss_fn(

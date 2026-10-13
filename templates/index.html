@@ -182,6 +182,25 @@ textarea.placeholder-active { color: var(--text3); }
 .upload-btn:hover { background: var(--hdr); }
 input[type="file"] { display: none; }
 
+/* Formula input */
+.formula-card { padding: 8px 10px; display: flex; align-items: center; gap: 8px; }
+.formula-card label { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.formula-card input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  outline: none;
+}
+.formula-card input:focus { border-color: var(--purple); }
+.formula-card small { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.input-hint { font-size: 11px; color: var(--text3); }
+
 /* Button row */
 .btn-row {
   display: flex;
@@ -451,6 +470,7 @@ input[type="file"] { display: none; }
           <input type="file" id="file-h1" accept=".csv,.txt,.jcamp,.dx"
             onchange="handleFile('h1', this)">
         </div>
+        <div class="input-hint">Include multiplicity and integration, e.g. (d, 2H), for much better results.</div>
       </div>
     </div>
 
@@ -468,11 +488,12 @@ input[type="file"] { display: none; }
       <div class="input-area">
         <div class="input-row">
           <textarea id="input-c13" class="placeholder-active"
-            placeholder="7.34 (d, 1H), 2.43 (s, 3H) — or just shifts: 7.34, 2.43"></textarea>
+            placeholder="170.7 (C), 128.5 (CH, 2C), 20.6 (CH3) — or just shifts"></textarea>
           <label class="upload-btn" for="file-c13">↑ upload</label>
           <input type="file" id="file-c13" accept=".csv,.txt,.jcamp,.dx"
             onchange="handleFile('c13', this)">
         </div>
+        <div class="input-hint">DEPT type (C/CH/CH2/CH3) and equivalent carbons (2C) matter most for accuracy.</div>
       </div>
     </div>
 
@@ -496,6 +517,13 @@ input[type="file"] { display: none; }
             onchange="handleFile('ir', this)">
         </div>
       </div>
+    </div>
+
+    <!-- Molecular formula -->
+    <div class="card formula-card">
+      <label for="input-formula">Molecular formula</label>
+      <input id="input-formula" type="text" placeholder="e.g. C9H8O4" autocomplete="off" spellcheck="false">
+      <small>optional · from MS</small>
     </div>
 
     <!-- Buttons -->
@@ -610,14 +638,16 @@ const DEMOS = {
   aspirin: {
     // Full multiplicity + integration from Thermo Fisher reference data (CDCl3)
     h1:  '11.77 (s, 1H), 8.12 (d, 1H), 7.66 (t, 1H), 7.28 (t, 1H), 7.16 (d, 1H), 2.36 (s, 3H)',
-    c13: '20.6, 122.3, 124.0, 126.0, 131.4, 134.2, 151.0, 169.6, 170.7',
+    c13: '20.6 (CH3), 122.3 (C), 124.0 (CH), 126.0 (CH), 131.4 (CH), 134.2 (CH), 151.0 (C), 169.6 (C), 170.7 (C)',
     ir:  '760, 1010, 1183, 1368, 1456, 1605, 1692, 1750, 2900, 3300',
+    formula: 'C9H8O4',
     force_model: true,
   },
   cholesterol: {
     h1:  '5.35 (m, 1H), 3.52 (m, 1H), 2.28 (m, 2H), 1.84 (m, 1H), 1.01 (s, 3H), 0.92 (d, 3H), 0.68 (s, 3H)',
     c13: '11.89, 18.74, 19.43, 21.15, 22.60, 22.81, 23.89, 24.32, 28.02, 28.24, 31.71, 31.94, 35.81, 36.24, 36.56, 37.31, 39.56, 39.83, 42.35, 50.19, 56.21, 56.80, 71.81, 121.69, 140.80',
     ir:  '',
+    formula: 'C27H46O',
     force_model: false,
   },
 };
@@ -1074,6 +1104,7 @@ function loadDemo(name) {
   setField('h1',  demo.h1);
   setField('c13', demo.c13);
   setField('ir',  demo.ir);
+  document.getElementById('input-formula').value = demo.formula || '';
   // Store force_model for when user clicks Predict
   window._demoForceModel = demo.force_model;
 }
@@ -1107,6 +1138,7 @@ async function runPredict(forceModel = false) {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         h1: h1Text, c13: c13Text, ir: irText,
+        formula: document.getElementById('input-formula').value.trim(),
         force_model: forceModel
       }),
     });
@@ -1136,10 +1168,14 @@ async function runPredict(forceModel = false) {
       'model':    'Model prediction',
       'demo':     'Demo',
     };
-    setStatus(
-      `${statusMap[source] || source} · ${data.alts.length} alternatives`,
-      source === 'database' ? 'var(--teal)' : verified ? 'var(--teal)' : 'var(--purple)'
-    );
+    if (data.top.formula_match === false) {
+      setStatus('No candidate matches the formula — showing closest guesses', 'var(--amber)');
+    } else {
+      setStatus(
+        `${statusMap[source] || source} · ${data.alts.length} alternatives`,
+        source === 'database' ? 'var(--teal)' : verified ? 'var(--teal)' : 'var(--purple)'
+      );
+    }
 
   } catch(err) {
     setStatus('Server error — is server.py running?', 'var(--red)');
@@ -1260,6 +1296,7 @@ function pickAlt(idx) {
 // ── Clear all ─────────────────────────────────────────────────────────────
 function clearAll() {
   ['h1','c13','ir'].forEach(fid => setField(fid, ''));
+  document.getElementById('input-formula').value = '';
   topMatch    = null;
   altList     = [];
   selectedIdx = 0;

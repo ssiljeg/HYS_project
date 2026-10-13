@@ -82,7 +82,7 @@ def parse_rich_peaks(text):
         if shift == 0:
             continue
 
-        peak = {"shift": shift, "nH": None, "multiplicity": None, "J": []}
+        peak = {"shift": shift, "nH": None, "multiplicity": None, "J": [], "count": None}
 
         if inner:
             # inner looks like: "d, J=8.1 Hz, 1H"  or  "dd, J = 8.1, 1.2, 2H"
@@ -95,6 +95,18 @@ def parse_rich_peaks(text):
                 nh_match = re.match(r'^(\d+\.?\d*)\s*h$', tok_low)
                 if nh_match:
                     peak["nH"] = int(round(float(nh_match.group(1))))
+                    continue
+
+                # 13C DEPT type — "C", "CH", "CH2", "CH3" → attached-H count
+                dept_match = re.match(r'^c(h([0-3])?)?$', tok_low)
+                if dept_match:
+                    peak["nH"] = 0 if not dept_match.group(1) else int(dept_match.group(2) or 1)
+                    continue
+
+                # 13C equivalent-carbon count — "2C"
+                count_match = re.match(r'^(\d+)\s*c$', tok_low)
+                if count_match:
+                    peak["count"] = int(count_match.group(1))
                     continue
 
                 # J coupling — "J=8.1", "J = 8.1 Hz", "J=8.1Hz"
@@ -150,6 +162,13 @@ _model     = None
 _tokenizer = None
 _config    = None
 _db        = None
+
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+from preprocessor import (encode_h_peaks, encode_c_peaks, make_peak_mask,
+                          ir_from_peaks, encode_formula, parse_formula,
+                          formula_counts_from_smiles, carbon_intensity,
+                          C13_TYPICAL_INTENSITY)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -295,9 +314,6 @@ def get_model():
     if _model is not None:
         return _model, _tokenizer
 
-    if PROJECT_DIR not in sys.path:
-        sys.path.insert(0, PROJECT_DIR)
-
     import torch
     from model            import SpectraToSmilesModel
     from smiles_tokenizer import SmilesTokenizer
@@ -314,13 +330,15 @@ def get_model():
     if isinstance(raw, dict) and "model_state_dict" in raw:
         # New full checkpoint format
         state_dict = raw["model_state_dict"]
+        input_version = raw.get("input_version", 1)
         saved_loss = raw.get("best_val_loss", "?")
         saved_epoch = raw.get("outer_epoch", "?")
-        print(f"[model] Full checkpoint loaded "
-              f"(epoch={saved_epoch}, best_val_loss={saved_loss})")
+        print(f"[model] Full checkpoint loaded (input_version={input_version}, "
+              f"epoch={saved_epoch}, best_val_loss={saved_loss})")
     else:
         # Legacy weights-only format
         state_dict = raw
+        input_version = 1
         print("[model] Legacy weights-only checkpoint loaded")
 
     d_model         = state_dict["token_embedding.weight"].shape[1]
@@ -339,6 +357,7 @@ def get_model():
         num_decoder_layers = num_dec,
         dim_feedforward    = dim_feedforward,
         max_smiles_length  = config["max_smiles_length"],
+        input_version      = input_version,
     )
     model.load_state_dict(state_dict)
     model.eval()
@@ -368,129 +387,138 @@ def infer_nh(peak):
     return 1  # multiplet or unknown
 
 
-def build_h_peaks(rich_peaks):
+def build_h_peaks(rich_peaks, guess_unknown=True):
     """
     Convert rich peak dicts (from parse_rich_peaks) → dicts expected by
     encode_h_peaks: {"centroid", "nH", "category"}.
 
-    When nH is explicitly provided by the user it is used exactly.
-    When missing, infer_nh() makes a multiplicity-informed guess rather
-    than always defaulting to 1 (which is systematically wrong for methyls).
-    When multiplicity is also missing, both default to the safest values.
+    Values the user gave are used exactly. Missing ones:
+      guess_unknown=True  (input_version 1 models, which never saw "unknown"):
+          nH from infer_nh(), multiplicity "m".
+      guess_unknown=False (input_version 2 models, trained with hidden values):
+          left as None → encoded as the explicit "unknown" codes.
     """
     out = []
     for p in rich_peaks:
-        nH = p["nH"] if p["nH"] is not None else infer_nh(p)
-        # Fix #2: when multiplicity truly unknown, use "m" (multiplet)
-        # which is the model's DEFAULT_MULTIPLICITY. We no longer try to
-        # guess from shift position since the model encodes this as a single
-        # integer and "m" is the most honest representation of "unknown".
-        mult = p["multiplicity"] if p["multiplicity"] else "m"
-        out.append({
-            "centroid": p["shift"],
-            "nH":       nH,
-            "category": mult,
-        })
+        nH, mult = p["nH"], p["multiplicity"]
+        if guess_unknown:
+            nH = nH if nH is not None else infer_nh(p)
+            mult = mult or "m"
+        out.append({"centroid": p["shift"], "nH": nH, "category": mult})
     return out
 
 
-# Median ¹³C intensity in the training dataset, measured across 285,303 peaks.
-# Distribution is right-skewed (mean=0.082, median=0.051, max=1.25) so the
-# median is more representative of a typical peak than the mean.
-# Using this keeps the encoder inputs in the distribution it learned from,
-# rather than the previous default of 1.0 which was ~20x too high.
-C13_INTENSITY_MEAN = 0.0512
+# Off-resonance 13C multiplicity → attached H (s = C, d = CH, t = CH2, q = CH3)
+C13_MULT_TO_NH = {"s": 0, "d": 1, "t": 2, "q": 3}
 
-def build_c_peaks(rich_peaks):
+
+def build_c_peaks(rich_peaks, guess_unknown=True):
     """
-    Convert rich peak dicts → dicts expected by encode_c_peaks:
-    {"delta (ppm)", "intensity"}.
-    Uses dataset-mean intensity (0.050) rather than 1.0, since the model
-    was trained on real intensities in the ~0.05 range. This keeps the
-    encoder inputs in the distribution it learned from.
-    Real per-peak intensity is not available from user-pasted shift lists.
+    Convert rich peak dicts → dicts expected by encode_c_peaks.
+
+    The model reads 13C intensity as DEPT type × equivalent carbons (see
+    preprocessor.carbon_intensity), so it's rebuilt from what the user gave:
+    "(CH3)" / "(q)" sets the attached H, "(2C)" or a repeated shift sets the
+    count. Without a DEPT type the intensity is unknown:
+      guess_unknown=True  (input_version 1): training-set median intensity.
+      guess_unknown=False (input_version 2): None → explicit "unknown" code.
     """
-    return [{"delta (ppm)": p["shift"], "intensity": C13_INTENSITY_MEAN}
-            for p in rich_peaks]
+    merged = {}   # identical shifts listed twice = equivalent carbons
+    for p in rich_peaks:
+        key = round(p["shift"], 2)
+        n_h = p["nH"] if p["nH"] is not None else C13_MULT_TO_NH.get(p["multiplicity"])
+        count = p.get("count") or 1
+        if key in merged:
+            merged[key]["count"] += count
+        else:
+            merged[key] = {"shift": p["shift"], "n_h": n_h, "count": count}
+
+    out = []
+    for m in merged.values():
+        if m["n_h"] is not None:
+            intensity = carbon_intensity(m["n_h"], m["count"])
+        else:
+            intensity = C13_TYPICAL_INTENSITY if guess_unknown else None
+        out.append({"delta (ppm)": m["shift"], "intensity": intensity})
+    return out
 
 
-def model_predict(h1_peaks, c13_peaks, ir_shifts, beam_width=5):
+def canonical(smiles):
+    """Canonical SMILES, or None if RDKit can't parse it."""
+    from rdkit import Chem, RDLogger
+    RDLogger.DisableLog("rdApp.*")
+    mol = Chem.MolFromSmiles(smiles)
+    return Chem.MolToSmiles(mol) if mol else None
+
+
+def apply_formula(candidates, formula_counts):
+    """
+    Tag each candidate with formula_match and put matches first (stable, so
+    score order is kept within each group). Non-matching candidates are kept
+    only if nothing matches, so the user still sees something.
+    """
+    if not formula_counts:
+        return candidates
+    for c in candidates:
+        c["formula_match"] = formula_counts_from_smiles(c["smiles"]) == formula_counts
+    matches = [c for c in candidates if c["formula_match"]]
+    return matches if matches else candidates
+
+
+def model_predict(h1_peaks, c13_peaks, ir_shifts, beam_width=5, formula_counts=None):
     """
     h1_peaks, c13_peaks: lists of rich peak dicts from parse_rich_peaks()
     ir_shifts: list of plain wavenumber floats
+    formula_counts: element-count dict from parse_formula(), or None
+    Returns unique, valid candidates (canonical SMILES), best first.
     """
     try:
         import torch
-        from preprocessor import (encode_h_peaks, encode_c_peaks,
-                                   normalize_spectrum, make_peak_mask)
-        from evaluator    import generate_smiles_beam_search
+        from evaluator import generate_smiles_beam_search
 
         model, tokenizer = get_model()
         config           = get_config()
+        v2               = model.input_version >= 2
 
         max_h   = config["max_h_peaks"]       # 28
         max_c   = config["max_c_peaks"]        # 74
         max_len = config["max_smiles_length"]  # 81
-        ir_len  = 1800
 
         # ── Encode peaks ──────────────────────────────────────────────────────
-        h_peaks  = build_h_peaks(h1_peaks)
-        c_peaks  = build_c_peaks(c13_peaks)
-
-        h_arr    = encode_h_peaks(h_peaks, max_h)
-        c_arr    = encode_c_peaks(c_peaks, max_c)
-        h_mask   = make_peak_mask(len(h_peaks), max_h)
-        c_mask   = make_peak_mask(len(c_peaks), max_c)
+        h_peaks  = build_h_peaks(h1_peaks, guess_unknown=not v2)
+        c_peaks  = build_c_peaks(c13_peaks, guess_unknown=not v2)
 
         # ── Encode IR ─────────────────────────────────────────────────────────
         # The model was trained on 1800-point continuous absorbance spectra,
-        # NOT sparse peak arrays. Training data has values in roughly [-0.06, 1.0]
-        # with a near-zero baseline and positive peaks at absorption bands.
-        #
-        # To match this distribution, reconstruct a plausible continuous spectrum
-        # from user-provided wavenumber peaks using Lorentzian functions — this
-        # produces smooth peak shapes similar to what the model learned from.
-        #
-        # IR array maps wavenumber range 400–4000 cm⁻¹ → 1800 bins linearly.
-        ir_arr = np.zeros(ir_len, dtype=np.float32)
-        if ir_shifts:
-            wn_axis = np.linspace(400, 4000, ir_len)
-            peak_width = 20.0  # cm⁻¹ half-width — typical IR band width
-
-            for wn in ir_shifts:
-                # Lorentzian peak centred at wn
-                lorentz = peak_width**2 / ((wn_axis - wn)**2 + peak_width**2)
-                ir_arr += lorentz.astype(np.float32)
-
-            # Normalise to [0, 1] then add small noise floor matching training stats
-            max_val = ir_arr.max()
-            if max_val > 0:
-                ir_arr = ir_arr / max_val
-            # Apply normalize_spectrum to match exact training preprocessing
-            ir_arr = normalize_spectrum(ir_arr)
+        # so pasted wavenumbers are rebuilt into one (Lorentzian per peak).
+        # No IR given → all zeros, which v2 models treat as "absent".
+        ir_arr = ir_from_peaks(ir_shifts)
 
         # ── To tensors (unbatched — beam search adds the batch dim) ───────────
-        device   = torch.device("cpu")
-        h_t      = torch.tensor(h_arr,  dtype=torch.float32).to(device)
-        c_t      = torch.tensor(c_arr,  dtype=torch.float32).to(device)
-        h_mask_t = torch.tensor(h_mask, dtype=torch.float32).to(device)
-        c_mask_t = torch.tensor(c_mask, dtype=torch.float32).to(device)
-        ir_t     = torch.tensor(ir_arr, dtype=torch.float32).to(device)
-
-        # ── Beam search ───────────────────────────────────────────────────────
+        t = lambda a: torch.tensor(a, dtype=torch.float32)
         candidates = generate_smiles_beam_search(
             model,
-            h_t, h_mask_t,
-            c_t, c_mask_t,
-            ir_t,
+            t(encode_h_peaks(h_peaks, max_h)), t(make_peak_mask(len(h_peaks), max_h)),
+            t(encode_c_peaks(c_peaks, max_c)), t(make_peak_mask(len(c_peaks), max_c)),
+            t(ir_arr),
             tokenizer  = tokenizer,
-            device     = device,
+            device     = torch.device("cpu"),
             max_length = max_len,
             beam_width = beam_width,
             return_all = True,
+            formula    = t(encode_formula(formula_counts)) if v2 else None,
         )
-        return [{"smiles": s, "score": round(float(sc), 4), "source": "model"}
-                for s, sc in candidates]
+
+        # Different beams can spell the same molecule differently; keep the
+        # best-scoring spelling of each, and drop chemically invalid SMILES.
+        out, seen = [], set()
+        for s, sc in candidates:
+            can = canonical(s)
+            if can is None or can in seen:
+                continue
+            seen.add(can)
+            out.append({"smiles": can, "score": round(float(sc), 4), "source": "model"})
+        return out
 
     except Exception as e:
         print(f"[model] Prediction failed, falling back to demo results: {e!r}")
@@ -560,6 +588,7 @@ def predict():
     c13_text    = data.get("c13", "")
     ir_text     = data.get("ir",  "")
     force_model = data.get("force_model", False)
+    formula_txt = (data.get("formula") or "").strip()
 
     # ── Parse + range-filter inputs ───────────────────────────────────────────
     def filter_range(peaks, mn, mx):
@@ -576,14 +605,23 @@ def predict():
     if not h1_peaks and not c13_peaks and not ir_peaks:
         return jsonify({"error": "No input provided"}), 400
 
+    formula_counts = None
+    if formula_txt:
+        try:
+            formula_counts = parse_formula(formula_txt)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     # ══════════════════════════════════════════════════════════════════════════
-    # PIPELINE: DB first → model fills remaining slots → plausibility rerank
+    # PIPELINE: DB lookup → model fills remaining slots → formula filter
     # ══════════════════════════════════════════════════════════════════════════
     #
-    # DB lookup is the reliable primary source right now.
-    # The model fills any slots the DB doesn't cover and contributes
-    # unique candidates the DB may not contain.
+    # DB hits (real measured spectra) come first; the model fills the rest
+    # and can propose structures the DB doesn't contain.
     # force_model=True (demos) bypasses DB and goes straight to model.
+    # If a molecular formula is given, it's the strongest constraint we have:
+    # DB hits that don't match are dropped, and the model searches wider
+    # (bigger beam) so enough formula-matching candidates survive.
 
     DB_VERIFY_THRESHOLD = 0.25   # minimum bidirectional score to count as a hit
     SLOTS = 5                    # total candidates to return
@@ -598,64 +636,46 @@ def predict():
         for c in db_hits:
             c["source"]   = "database"
             c["verified"] = True
+        if formula_counts:
+            db_hits = [c for c in apply_formula(db_hits, formula_counts)
+                       if c["formula_match"]]
 
     # ── Stage 2: Model fills remaining slots ──────────────────────────────────
     # Always run the model — it may find structures the DB doesn't have.
-    # Deduplicate against DB hits by canonical SMILES.
+    # model_predict already returns unique canonical SMILES.
     slots_needed = SLOTS - len(db_hits)
-
     model_candidates = model_predict(
         h1_peaks, c13_peaks, ir_shifts,
-        beam_width=max(SLOTS, slots_needed + 2)   # generate a few extra to allow dedup
+        beam_width=20 if formula_counts else 10,
+        formula_counts=formula_counts,
     )
+    model_candidates = apply_formula(model_candidates, formula_counts)
 
-    if model_candidates:
-        # Canonicalise DB hit SMILES for dedup comparison
-        db_smiles_set = set()
-        try:
-            from rdkit import Chem as _Chem, RDLogger as _RDLogger
-            _RDLogger.DisableLog("rdApp.*")
-            use_rdkit = True
-        except ImportError:
-            use_rdkit = False
+    db_smiles_set = {canonical(c["smiles"]) for c in db_hits}
+    for c in model_candidates:
+        if len(model_hits) >= slots_needed:
+            break
+        if c["smiles"] in db_smiles_set:   # same structure as a DB hit
+            continue
 
-        if use_rdkit:
-            for c in db_hits:
-                mol = _Chem.MolFromSmiles(c["smiles"])
-                if mol:
-                    db_smiles_set.add(_Chem.MolToSmiles(mol))
+        # Verify each model candidate against DB to get a confidence boost
+        db_s = db_verify_candidate(c["smiles"], h1_shifts, c13_shifts)
+        if db_s is not None and db_s >= DB_VERIFY_THRESHOLD:
+            c["source"]   = "model+db"
+            c["verified"] = True
+            c["score"]    = round(c["score"] * 0.6 + db_s * 0.4, 4)
+        else:
+            c["verified"] = False
+            if db_s is not None:
+                c["score"] = round(c["score"] * 0.7, 4)  # weak DB match — slight penalty
+        model_hits.append(c)
 
-        for c in model_candidates:
-            if len(model_hits) >= slots_needed:
-                break
-            # Skip if same structure already covered by a DB hit
-            if use_rdkit:
-                mol = _Chem.MolFromSmiles(c["smiles"])
-                canonical = _Chem.MolToSmiles(mol) if mol else c["smiles"]
-            else:
-                canonical = c["smiles"]
-            if canonical in db_smiles_set:
-                continue
-
-            # Verify each model candidate against DB to get a confidence boost
-            db_s = db_verify_candidate(c["smiles"], h1_shifts, c13_shifts)
-            if db_s is not None and db_s >= DB_VERIFY_THRESHOLD:
-                c["source"]   = "model+db"
-                c["verified"] = True
-                c["score"]    = round(c["score"] * 0.6 + db_s * 0.4, 4)
-            else:
-                c["source"]   = "model"
-                c["verified"] = False
-                if db_s is not None and db_s < DB_VERIFY_THRESHOLD:
-                    c["score"] = round(c["score"] * 0.7, 4)  # weak DB match — slight penalty
-
-            model_hits.append(c)
-
-    # ── Stage 3: Combine and plausibility rerank ──────────────────────────────
-    # DB hits come first (they're the reliable source), then model candidates.
-    # Within each group, sort by score descending.
-    db_hits.sort(key=lambda c: c["score"], reverse=True)
-    model_hits.sort(key=lambda c: c["score"], reverse=True)
+    # ── Stage 3: Combine ──────────────────────────────────────────────────────
+    # DB hits first (the reliable source), then model candidates; within each
+    # group, formula matches first, then by score.
+    rank = lambda c: (c.get("formula_match", True), c["score"])
+    db_hits.sort(key=rank, reverse=True)
+    model_hits.sort(key=rank, reverse=True)
     candidates = (db_hits + model_hits)[:SLOTS]
 
     if not candidates:

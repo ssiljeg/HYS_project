@@ -15,6 +15,7 @@ import json
 import random
 import gc
 import os
+import shutil
 import sys
 import time
 import torch
@@ -107,6 +108,7 @@ def save_checkpoint(path, model, optimizer, scheduler,
                     outer_epoch, chunk_idx, best_val_loss, val_loss):
     """Save a full checkpoint including optimizer and scheduler state."""
     torch.save({
+        "input_version":        model.input_version,
         "model_state_dict":     model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
@@ -144,6 +146,22 @@ def load_checkpoint(path, model, optimizer, scheduler, device):
     return outer_epoch, chunk_idx, best_val_loss
 
 
+def warm_start(model, path, device):
+    """Load whatever weights from `path` fit the current model, leaving any new
+    or reshaped layers at their fresh init. Returns the loaded checkpoint dict
+    (or {} for a legacy weights-only file)."""
+    ckpt = torch.load(path, map_location=device)
+    state_dict = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
+    own = model.state_dict()
+    usable = {k: v for k, v in state_dict.items() if k in own and own[k].shape == v.shape}
+    model.load_state_dict(usable, strict=False)
+    fresh = sorted(k for k in own if k not in usable)
+    log(f"Warm start from {path}: loaded {len(usable)}/{len(own)} tensors")
+    if fresh:
+        log(f"  Fresh init: {', '.join(fresh)}")
+    return ckpt if isinstance(ckpt, dict) and "model_state_dict" in ckpt else {}
+
+
 # ── Data helpers ──────────────────────────────────────────────────────────────
 def build_val_loader(val_files, tokenizer, config):
     log(f"Loading {len(val_files)} held-out validation files...")
@@ -153,6 +171,7 @@ def build_val_loader(val_files, tokenizer, config):
         max_smiles_length=config["max_smiles_length"],
         max_h_peaks=config["max_h_peaks"],
         max_c_peaks=config["max_c_peaks"],
+        augment="val",
     )
     return DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -165,6 +184,7 @@ def train_on_chunk(model, chunk_files, tokenizer, config,
         max_smiles_length=config["max_smiles_length"],
         max_h_peaks=config["max_h_peaks"],
         max_c_peaks=config["max_c_peaks"],
+        augment="train",
     )
     loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     loss = 0.0
@@ -268,23 +288,30 @@ def run_chunked_training(folder_path=FOLDER, resume=True, weights_only=False):
         load_path = SAVE_PATH if os.path.exists(SAVE_PATH) else RESUME_PATH
         if os.path.exists(load_path):
             log(f"[weights_only mode] Loading model weights only from {load_path}")
-            ckpt = torch.load(load_path, map_location=device)
-            state_dict = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
-            try:
-                model.load_state_dict(state_dict)
-                best_val_loss = ckpt.get("best_val_loss", float("inf")) if isinstance(ckpt, dict) else float("inf")
-                log("[weights_only mode] Optimizer, scheduler, and outer_epoch reset to fresh start")
-            except RuntimeError as e:
-                # Shape mismatch — almost certainly means the architecture in model.py
-                # (d_model, layer counts, etc.) has changed since this checkpoint was
-                # saved. Old weights genuinely cannot populate a differently-shaped
-                # model, so there's nothing to salvage here — fall back to the fresh
-                # random initialization that already exists in `model` and continue.
-                log("[weights_only mode] Checkpoint architecture doesn't match the "
-                    "current model.py (this is expected after changing d_model/layers/etc). "
-                    "Starting from a fresh random initialization instead.")
-                log(f"[weights_only mode] Underlying error: {e}")
+            ckpt = warm_start(model, load_path, device)
+            ckpt_version = ckpt.get("input_version", 1)
+            if ckpt_version == model.input_version:
+                best_val_loss = ckpt.get("best_val_loss", float("inf"))
+            else:
+                # Inputs/val set changed meaning, so the old best val loss isn't
+                # comparable — keeping it would mean best_model.pt never gets saved.
+                log(f"[weights_only mode] Upgrading input_version {ckpt_version} -> "
+                    f"{model.input_version}: best val loss reset")
                 best_val_loss = float("inf")
+                if ckpt_version < 2 <= model.input_version:
+                    # The IR encoder never trained in v1 (its tokens were masked)
+                    # and the formula encoder is new: zero their output layers so
+                    # they start silent and fade in, instead of feeding random
+                    # noise into the pretrained encoder/decoder.
+                    for layer in (model.ir_encoder.fc, model.formula_encoder.projection[2]):
+                        nn.init.zeros_(layer.weight)
+                        nn.init.zeros_(layer.bias)
+                    log("[weights_only mode] Zero-initialized IR/formula output layers")
+                backup = SAVE_PATH.replace(".pt", f"_v{ckpt_version}.pt")
+                if os.path.exists(SAVE_PATH) and not os.path.exists(backup):
+                    shutil.copy2(SAVE_PATH, backup)
+                    log(f"[weights_only mode] Backed up {SAVE_PATH} -> {backup}")
+            log("[weights_only mode] Optimizer, scheduler, and outer_epoch reset to fresh start")
         else:
             log("[weights_only mode] No checkpoint found — starting from scratch")
     elif resume and os.path.exists(RESUME_PATH):

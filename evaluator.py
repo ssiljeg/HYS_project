@@ -11,7 +11,7 @@ RDLogger.DisableLog('rdApp.*')
 
 
 def generate_smiles_batch(model, h_peaks, h_mask, c_peaks, c_mask, ir,
-                          tokenizer, device, max_length):
+                          tokenizer, device, max_length, formula=None):
     """
     Autoregressive generation: starts with <START>, predicts one token at a time,
     feeds each prediction back in as input for the next step.
@@ -27,7 +27,7 @@ def generate_smiles_batch(model, h_peaks, h_mask, c_peaks, c_mask, ir,
 
     with torch.no_grad():
         # Encode the spectra once -- this doesn't change as we generate tokens
-        memory, padding_mask = model.encode(h_peaks, h_mask, c_peaks, c_mask, ir)
+        memory, padding_mask = model.encode(h_peaks, h_mask, c_peaks, c_mask, ir, formula)
 
         # Start every sequence in the batch with just the <START> token
         generated = torch.full((batch_size, 1), start_id, dtype=torch.long, device=device)
@@ -128,20 +128,22 @@ def evaluate_model(model, dataloader, tokenizer, device, max_length, max_batches
         if max_batches is not None and batch_idx >= max_batches:
             break  # let us test on a small slice instead of the whole test set, for speed
 
-        h_peaks, h_mask, c_peaks, c_mask, ir, target_ids = batch
+        h_peaks, h_mask, c_peaks, c_mask, ir, formula, target_ids = batch
 
         h_peaks = h_peaks.to(device)
         h_mask = h_mask.to(device)
         c_peaks = c_peaks.to(device)
         c_mask = c_mask.to(device)
         ir = ir.to(device)
+        formula = formula.to(device)
 
         # Get the TRUE SMILES strings for this batch (decode the ground truth tokens)
         true_smiles_list = [tokenizer.decode(ids.tolist()) for ids in target_ids]
 
         # Generate predicted SMILES
         predicted_smiles_list = generate_smiles_batch(
-            model, h_peaks, h_mask, c_peaks, c_mask, ir, tokenizer, device, max_length
+            model, h_peaks, h_mask, c_peaks, c_mask, ir, tokenizer, device, max_length,
+            formula=formula,
         )
 
         for true_smiles, predicted_smiles in zip(true_smiles_list, predicted_smiles_list):
@@ -188,13 +190,14 @@ def evaluate_model(model, dataloader, tokenizer, device, max_length, max_batches
 
 def generate_smiles_beam_search(model, h_peaks, h_mask, c_peaks, c_mask, ir,
                                 tokenizer, device, max_length, beam_width=5,
-                                return_all=False):
+                                return_all=False, formula=None):
     """
     Generates ONE SMILES string for ONE molecule using beam search.
     Keeps the top `beam_width` candidate sequences alive at every step,
     instead of only ever keeping the single best guess (greedy).
     Inputs are unbatched (no leading batch dim). With return_all=True,
     returns every final beam as a ranked list of (smiles, confidence).
+    formula: optional [FORMULA_FEATURES] tensor (input_version 2 models).
     """
     model.eval()
     start_id = tokenizer.token_to_id["<START>"]
@@ -203,7 +206,8 @@ def generate_smiles_beam_search(model, h_peaks, h_mask, c_peaks, c_mask, ir,
     with torch.no_grad():
         memory, padding_mask = model.encode(
             h_peaks.unsqueeze(0), h_mask.unsqueeze(0),
-            c_peaks.unsqueeze(0), c_mask.unsqueeze(0), ir.unsqueeze(0)
+            c_peaks.unsqueeze(0), c_mask.unsqueeze(0), ir.unsqueeze(0),
+            formula.unsqueeze(0) if formula is not None else None,
         )
 
         # Each beam: (list of token ids, cumulative log-prob, is_finished)
@@ -271,10 +275,10 @@ def evaluate_model_beam_search(model, dataloader, tokenizer, device, max_length,
         if max_batches is not None and batch_idx >= max_batches:
             break
 
-        h_peaks, h_mask, c_peaks, c_mask, ir, target_ids = batch
+        h_peaks, h_mask, c_peaks, c_mask, ir, formula, target_ids = batch
         h_peaks, h_mask = h_peaks.to(device), h_mask.to(device)
         c_peaks, c_mask = c_peaks.to(device), c_mask.to(device)
-        ir = ir.to(device)
+        ir, formula = ir.to(device), formula.to(device)
 
         for i in range(h_peaks.size(0)):
             true_smiles = tokenizer.decode(target_ids[i].tolist())
@@ -282,6 +286,7 @@ def evaluate_model_beam_search(model, dataloader, tokenizer, device, max_length,
             predicted_smiles = generate_smiles_beam_search(
                 model, h_peaks[i], h_mask[i], c_peaks[i], c_mask[i], ir[i],
                 tokenizer, device, max_length, beam_width=beam_width,
+                formula=formula[i],
             )
 
             total += 1
@@ -356,14 +361,15 @@ if __name__ == "__main__":
     )
     val_loader = DataLoader(val_ds, batch_size=32, shuffle=False)
 
-    # Build the model with the SAME shapes it was trained with
+    device = get_device()
+    checkpoint = torch.load("best_model.pt", map_location=device)
+
+    # Build the model with the SAME shapes and input version it was trained with
     model = SpectraToSmilesModel(
         vocab_size=config["vocab_size"],
         max_smiles_length=config["max_smiles_length"],
+        input_version=checkpoint.get("input_version", 1),
     )
-    device = get_device()
-
-    checkpoint = torch.load("best_model.pt", map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
 

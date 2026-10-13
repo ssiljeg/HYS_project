@@ -29,7 +29,21 @@ These are too large for GitHub and are excluded by `.gitignore`:
 ```bash
 python server.py        # then open http://localhost:5000
 ```
-The app accepts annotated ¹H peaks such as `7.34 (d, J=8.1 Hz, 1H)`.
+
+### Entering data (what matters for accuracy)
+
+| Field | Format | Notes |
+|---|---|---|
+| ¹H | `7.34 (d, J=8.1 Hz, 2H), 2.36 (s, 3H)` | Multiplicity and integration help a lot; bare shifts also work |
+| ¹³C | `170.7 (C), 128.5 (CH, 2C), 20.6 (CH3)` | **DEPT type and equivalent-carbon count matter most.** `s/d/t/q` off-resonance notation also works; a repeated shift counts as 2C |
+| IR | `1750, 1692, 3300` | Peak wavenumbers in cm⁻¹ |
+| Formula | `C9H8O4` | Optional. Candidates with the wrong formula are filtered out |
+
+The model was trained on ¹³C intensities that encode each carbon's attached-H
+count × number of equivalent carbons (like DEPT). With that information the
+current model gets the exact structure for ~73% of held-out molecules; with
+bare ¹³C shifts it gets ~0%. Models retrained with the current code (input
+version 2) are trained to handle missing information instead.
 
 If `search_data/nmrshiftdb.parquet` is missing, rebuild it once from the SDF:
 ```bash
@@ -50,6 +64,7 @@ python setup_db.py
 | `scan_dataset.py` | Scans the dataset and writes `dataset_config.json` (vocab, max lengths) |
 | `trainer.py` | Per-epoch train/eval helpers |
 | `chunked_trainer.py` | Main training script (streams parquet chunks, writes `best_model.pt` / `checkpoint.pt`) |
+| `benchmark.py` | Accuracy on held-out molecules for realistic web-app input (see below) |
 | `setup_db.py` | Converts `nmrshiftdb2withsignals.sd` → `nmrshiftdb.parquet` |
 | `training_search.py` | Experimental search over the training set. Not wired into the apps yet |
 
@@ -57,24 +72,48 @@ python setup_db.py
 
 ```
 H peaks [28,3]  ─→ MLP projection ─→ [28, d_model] ─┐
-C peaks [74,2]  ─→ MLP projection ─→ [74, d_model] ─┼─→ Transformer encoder ─→ memory
-IR [1800]       ─→ CNN            ─→ [1,  d_model] ─┘                            │
+C peaks [74,2]  ─→ MLP projection ─→ [74, d_model] ─┤
+IR [1800]       ─→ CNN            ─→ [L,  d_model] ─┼─→ Transformer encoder ─→ memory
+Formula [12]    ─→ MLP projection ─→ [1,  d_model] ─┘   (v2 only)            │
                                                                      (cross-attention)
 SMILES tokens ─→ embedding + positions ─→ Transformer decoder ─→ next token
 ```
 
-Current checkpoint: d_model=512, 8 heads, 4 encoder / 6 decoder layers, FFN 1536 (~28M params).
+d_model=512, 8 heads, 4 encoder / 6 decoder layers, FFN 1536 (~28M params).
+
+Checkpoints record an `input_version`, and `server.py` adapts to it:
+
+| Version | Inputs |
+|---|---|
+| 1 (original `best_model.pt`) | IR is ignored (masking bug), no formula input, never saw missing values, so the server guesses them |
+| 2 (after retraining) | IR used when given, formula token, explicit "unknown" codes for missing ¹H integrations/multiplicities and ¹³C intensities |
 
 ## Training
 
 ```bash
 python scan_dataset.py      # only if the dataset changes
-python chunked_trainer.py   # resumes from checkpoint.pt if present
-python evaluator.py         # beam-search metrics on the held-out files
+python chunked_trainer.py
+python evaluator.py         # beam-search metrics on clean held-out data
+python benchmark.py         # accuracy for realistic web-app input
 ```
 
-## Demo data: Aspirin (CDCl₃)
+`chunked_trainer.py` (with its default `WEIGHTS_ONLY_MODE = True`) warm-starts
+from `best_model.pt`. The first run after upgrading from a version 1 model:
+- backs up the old model to `best_model_v1.pt`
+- starts the new formula layer from scratch, keeping all other weights
+- resets the best validation loss, since validation now uses degraded input
 
-- **¹³C (ppm):** 20.6, 122.3, 124.0, 126.0, 131.4, 134.2, 151.0, 169.6, 170.7
-- **¹H (ppm):** 2.43, 7.10, 7.35, 7.62, 8.12, 11.89
-- **IR (cm⁻¹):** 760, 1010, 1183, 1368, 1456, 1605, 1692, 1750, 2900, 3300
+Training samples are randomly degraded (`AUGMENT` in `preprocessor.py`) to look
+like real input: missing spectra, hidden integrations/multiplicities/DEPT info,
+shift noise, missed peaks, IR rebuilt from picked peaks, and a formula given
+half the time. Validation uses the same degradation with a fixed seed, so expect
+higher validation loss than with version 1. Compare models with
+`benchmark.py`, not val loss.
+
+## Benchmark
+
+`benchmark.py` runs held-out molecules through the web app's model path (no
+database lookup), with added shift noise, for different input scenarios. It
+reports how often the exact structure is the top answer (top-1) or among the five
+shown (top-5), plus the Tanimoto similarity of the top answer to the truth.
+Run it before and after retraining to compare.
