@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HYS — Spectra → Structure</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #F2F1EE;
+  --surface:   #FFFFFF;
+  --border:    #D8D6CE;
+  --hdr:       #ECEAE4;
+  --purple:    #534AB7;
+  --purple-lt: #EEEDFE;
+  --teal:      #1D9E75;
+  --teal-lt:   #E1F5EE;
+  --amber:     #BA7517;
+  --amber-lt:  #FDF3DC;
+  --red:       #A32D2D;
+  --red-lt:    #FCEBEB;
+  --text:      #111111;
+  --text2:     #666662;
+  --text3:     #AAAAAA;
+  --radius:    8px;
+  --font:      -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono:      "SF Mono", "Fira Code", "Consolas", monospace;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Top bar ── */
+.topbar {
+  height: 48px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.topbar-hex { font-size: 20px; color: var(--purple); }
+.topbar-title { font-size: 17px; font-weight: 700; }
+.topbar-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text2);
+  transition: color 0.2s;
+}
+
+/* ── Body layout ── */
+.body {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 14px;
+  padding: 14px;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Titled card ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.card-header {
+  background: var(--hdr);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 700;
+  flex: 1;
+}
+.card-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.card-body { padding: 10px 12px; flex: 1; }
+
+/* ── Left column ── */
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.spectrum-card {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Chart area */
+.chart-area {
+  height: 105px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.chart-area canvas {
+  width: 100%;
+  height: 100%;
+}
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text3);
+  font-style: italic;
+  pointer-events: none;
+}
+
+/* Input area */
+.input-area {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+textarea {
+  flex: 1;
+  height: 36px;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.15s;
+}
+textarea:focus { border-color: var(--purple); }
+textarea.placeholder-active { color: var(--text3); }
+
+.upload-btn {
+  font-size: 11px;
+  color: var(--text2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+.upload-btn:hover { background: var(--hdr); }
+input[type="file"] { display: none; }
+
+/* Button row */
+.btn-row {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.btn-clear {
+  background: var(--surface);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.btn-clear:hover { background: var(--hdr); }
+
+.btn-predict {
+  flex: 1;
+  background: var(--purple);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.btn-predict:hover { opacity: 0.88; }
+.btn-predict:active { transform: scale(0.98); }
+.btn-predict:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.demo-wrap { position: relative; }
+.btn-demo {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+.btn-demo:hover { background: var(--hdr); }
+.demo-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+  min-width: 220px;
+  max-width: 280px;
+  overflow: hidden;
+  display: none;
+  z-index: 1000;
+}
+.demo-menu.open { display: block; }
+.demo-item {
+  padding: 10px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: normal;
+  line-height: 1.4;
+}
+.demo-item:hover { background: var(--purple-lt); color: var(--purple); }
+
+/* ── Right column ── */
+.right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Top match card */
+.top-match-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.top-match-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.badge-db     { background: var(--teal-lt);   color: var(--teal); }
+.badge-model  { background: var(--purple-lt); color: var(--purple); }
+.badge-demo   { background: var(--amber-lt);  color: var(--amber); }
+
+/* Molecule viewer */
+.mol-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  position: relative;
+}
+.mol-viewer svg {
+  max-width: 100%;
+  max-height: 100%;
+}
+.mol-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--text3);
+}
+.mol-empty-hex { font-size: 48px; }
+.mol-empty p { font-size: 13px; }
+.mol-empty small { font-size: 11px; }
+
+/* SMILES strip */
+.smiles-strip {
+  background: var(--hdr);
+  border-top: 1px solid var(--border);
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.smiles-label { font-size: 11px; color: var(--text2); white-space: nowrap; }
+.smiles-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--purple);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.copy-btn {
+  font-size: 11px;
+  color: var(--text2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+.copy-btn:hover { background: var(--surface); }
+
+/* Properties row */
+.props-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.prop-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+.prop-label { font-size: 11px; color: var(--text2); margin-bottom: 3px; }
+.prop-value { font-size: 16px; font-weight: 600; }
+
+/* Alt options */
+.alts-card { flex-shrink: 0; }
+.alt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+  cursor: pointer;
+  min-height: 42px;
+}
+.alt-row:last-child { border-bottom: none; }
+.alt-row:hover { background: var(--purple-lt); }
+.alt-row.disabled { cursor: default; opacity: 0.4; }
+.alt-row.disabled:hover { background: none; }
+.alt-row.selected { background: var(--purple-lt); }
+.alt-row.selected .alt-num { color: var(--purple); font-weight: 600; }
+.alt-num { font-size: 12px; color: var(--text3); width: 20px; flex-shrink: 0; }
+.alt-mol-preview {
+  width: 60px; height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.alt-mol-preview svg { width: 60px; height: 36px; }
+.alt-smiles {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--purple);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.alt-score { font-size: 11px; color: var(--text2); flex-shrink: 0; }
+
+/* Spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <span class="topbar-hex">⬡</span>
+  <span class="topbar-title">HYS — Spectra → Structure</span>
+  <span class="topbar-status" id="status"></span>
+</div>
+
+<!-- Body -->
+<div class="body">
+
+  <!-- LEFT: spectrum inputs -->
+  <div class="left">
+
+    <!-- ¹H Spectrum -->
+    <div class="card spectrum-card">
+      <div class="card-header">
+        <div class="card-dot" style="background:#534AB7"></div>
+        <span class="card-title">¹H Spectrum</span>
+        <span id="badge-h1" style="display:none; font-size:11px; padding:2px 8px; border-radius:4px; margin-left:6px;"></span>
+      </div>
+      <div class="chart-area">
+        <canvas id="chart-h1"></canvas>
+        <div class="chart-empty" id="empty-h1">no data</div>
+      </div>
+      <div class="input-area">
+        <div class="input-row">
+          <textarea id="input-h1" class="placeholder-active"
+            placeholder="7.34 (d, 1H), 2.43 (s, 3H) — or just shifts: 7.34, 2.43"></textarea>
+          <label class="upload-btn" for="file-h1">↑ upload</label>
+          <input type="file" id="file-h1" accept=".csv,.txt,.jcamp,.dx"
+            onchange="handleFile('h1', this)">
+        </div>
+      </div>
+    </div>
+
+    <!-- ¹³C Spectrum -->
+    <div class="card spectrum-card">
+      <div class="card-header">
+        <div class="card-dot" style="background:#1D9E75"></div>
+        <span class="card-title">¹³C Spectrum</span>
+        <span id="badge-c13" style="display:none; font-size:11px; padding:2px 8px; border-radius:4px; margin-left:6px;"></span>
+      </div>
+      <div class="chart-area">
+        <canvas id="chart-c13"></canvas>
+        <div class="chart-empty" id="empty-c13">no data</div>
+      </div>
+      <div class="input-area">
+        <div class="input-row">
+          <textarea id="input-c13" class="placeholder-active"
+            placeholder="7.34 (d, 1H), 2.43 (s, 3H) — or just shifts: 7.34, 2.43"></textarea>
+          <label class="upload-btn" for="file-c13">↑ upload</label>
+          <input type="file" id="file-c13" accept=".csv,.txt,.jcamp,.dx"
+            onchange="handleFile('c13', this)">
+        </div>
+      </div>
+    </div>
+
+    <!-- IR Spectrum -->
+    <div class="card spectrum-card">
+      <div class="card-header">
+        <div class="card-dot" style="background:#BA7517"></div>
+        <span class="card-title">IR Spectrum</span>
+        <span id="badge-ir" style="display:none; font-size:11px; padding:2px 8px; border-radius:4px; margin-left:6px;"></span>
+      </div>
+      <div class="chart-area">
+        <canvas id="chart-ir"></canvas>
+        <div class="chart-empty" id="empty-ir">no data</div>
+      </div>
+      <div class="input-area">
+        <div class="input-row">
+          <textarea id="input-ir" class="placeholder-active"
+            placeholder="paste wavenumbers cm⁻¹ (comma-separated)…"></textarea>
+          <label class="upload-btn" for="file-ir">↑ upload</label>
+          <input type="file" id="file-ir" accept=".csv,.txt,.jcamp,.dx"
+            onchange="handleFile('ir', this)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="btn-row">
+      <button class="btn-predict" id="predict-btn" onclick="runPredict()">
+        ▶  Predict
+      </button>
+      <button class="btn-clear" onclick="clearAll()">Clear</button>
+      <div class="demo-wrap">
+        <button class="btn-demo" onclick="toggleDemoMenu()">Demo  ▾</button>
+        <div class="demo-menu" id="demo-menu">
+          <div class="demo-item" onclick="loadDemo('aspirin')">
+            Aspirin (3 spectra)
+          </div>
+          <div class="demo-item" onclick="loadDemo('cholesterol')">
+            Cholesterol (¹H + ¹³C — DB)
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /left -->
+
+  <!-- RIGHT: results -->
+  <div class="right">
+
+    <!-- Top Match -->
+    <div class="card top-match-card">
+      <div class="card-header top-match-header">
+        <span class="card-title">Top Match</span>
+        <span class="badge" id="source-badge" style="display:none"></span>
+        <span id="conf-label" style="font-size:12px;color:var(--text2)"></span>
+      </div>
+
+      <div class="mol-viewer" id="mol-viewer">
+        <div class="mol-empty">
+          <div class="mol-empty-hex">⬡</div>
+          <p>Enter spectra and click <strong>Predict</strong></p>
+          <small>or load a Demo to get started</small>
+        </div>
+      </div>
+
+      <div class="smiles-strip">
+        <span class="smiles-label">SMILES</span>
+        <span class="smiles-value" id="smiles-value">—</span>
+        <button class="copy-btn" onclick="copySmiles()">copy</button>
+      </div>
+    </div>
+
+    <!-- Properties -->
+    <div class="props-row">
+      <div class="prop-card">
+        <div class="prop-label">Formula</div>
+        <div class="prop-value" id="prop-formula">—</div>
+      </div>
+      <div class="prop-card">
+        <div class="prop-label">MW (g/mol)</div>
+        <div class="prop-value" id="prop-mw">—</div>
+      </div>
+      <div class="prop-card">
+        <div class="prop-label">Heavy atoms</div>
+        <div class="prop-value" id="prop-atoms">—</div>
+      </div>
+    </div>
+
+    <!-- Potential structures -->
+    <div class="card alts-card">
+      <div class="card-header">
+        <span class="card-title">Potential structures</span>
+      </div>
+      <div id="alts-list">
+        <!-- filled by JS -->
+        <div class="alt-row disabled" style="border-bottom:1px solid var(--border)">
+          <span class="alt-num">1.</span>
+          <span class="alt-smiles" style="color:var(--text3)">—</span>
+        </div>
+        <div class="alt-row disabled" style="border-bottom:1px solid var(--border)">
+          <span class="alt-num">2.</span>
+          <span class="alt-smiles" style="color:var(--text3)">—</span>
+        </div>
+        <div class="alt-row disabled" style="border-bottom:1px solid var(--border)">
+          <span class="alt-num">3.</span>
+          <span class="alt-smiles" style="color:var(--text3)">—</span>
+        </div>
+        <div class="alt-row disabled" style="border-bottom:1px solid var(--border)">
+          <span class="alt-num">4.</span>
+          <span class="alt-smiles" style="color:var(--text3)">—</span>
+        </div>
+        <div class="alt-row disabled">
+          <span class="alt-num">5.</span>
+          <span class="alt-smiles" style="color:var(--text3)">—</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /right -->
+
+</div><!-- /body -->
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let topMatch    = null;
+let altList     = [];
+let selectedIdx = -1;   // -1 = top match shown; 0-4 = that alt row shown
+                        // topMatch/altList NEVER reorder — this only
+                        // tracks which one is currently displayed.
+
+const COLORS = { h1: '#534AB7', c13: '#1D9E75', ir: '#BA7517' };
+
+// Demo data (literature values)
+const DEMOS = {
+  aspirin: {
+    // Full multiplicity + integration from Thermo Fisher reference data (CDCl3)
+    h1:  '11.77 (s, 1H), 8.12 (d, 1H), 7.66 (t, 1H), 7.28 (t, 1H), 7.16 (d, 1H), 2.36 (s, 3H)',
+    c13: '20.6, 122.3, 124.0, 126.0, 131.4, 134.2, 151.0, 169.6, 170.7',
+    ir:  '760, 1010, 1183, 1368, 1456, 1605, 1692, 1750, 2900, 3300',
+    force_model: true,
+  },
+  cholesterol: {
+    h1:  '5.35 (m, 1H), 3.52 (m, 1H), 2.28 (m, 2H), 1.84 (m, 1H), 1.01 (s, 3H), 0.92 (d, 3H), 0.68 (s, 3H)',
+    c13: '11.89, 18.74, 19.43, 21.15, 22.60, 22.81, 23.89, 24.32, 28.02, 28.24, 31.71, 31.94, 35.81, 36.24, 36.56, 37.31, 39.56, 39.83, 42.35, 50.19, 56.21, 56.80, 71.81, 121.69, 140.80',
+    ir:  '',
+    force_model: false,
+  },
+};
+
+// ── Peak parsing ───────────────────────────────────────────────────────────
+function parsePeaks(text) {
+  if (!text || !text.trim()) return [];
+  return text.trim().split(/[\s,;\n]+/)
+    .map(Number).filter(v => !isNaN(v) && v !== 0);
+}
+
+// Lightweight client-side mirror of the server's parse_rich_peaks(), used
+// only to drive chart rendering (peak height by nH, multiplicity labels).
+// The server re-parses the raw text itself for prediction — this copy
+// just needs to be good enough for visualization.
+const KNOWN_MULT = new Set(['s','d','t','q','p','m','dd','ddd','dt','td']);
+const MULT_ALIASES = {
+  br:'m', brs:'s', bs:'s', singlet:'s', doublet:'d', triplet:'t',
+  quartet:'q', quintet:'p', pentet:'p', multiplet:'m',
+};
+// Mirror server's infer_nh logic for chart rendering
+function inferNH(multiplicity) {
+  if (multiplicity === 'd' || multiplicity === 'q') return 3;
+  if (multiplicity === 't') return 2;
+  if (multiplicity === 's') return 2;
+  if (['dd','dt','td','ddd'].includes(multiplicity)) return 1;
+  return 1;
+}
+
+function parseRichPeaksClient(text) {
+  if (!text || !text.trim()) return [];
+  const peaks = [];
+  const re = /(-?\d+\.?\d*)\s*(?:\(([^)]*)\))?/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const shift = parseFloat(match[1]);
+    if (isNaN(shift) || shift === 0) continue;
+    const peak = { shift, nH: null, multiplicity: null };
+    if (match[2]) {
+      match[2].split(',').map(s => s.trim()).filter(Boolean).forEach(tok => {
+        const low = tok.toLowerCase();
+        const nhMatch = low.match(/^(\d+\.?\d*)\s*h$/);
+        if (nhMatch) { peak.nH = Math.round(parseFloat(nhMatch[1])); return; }
+        if (low.startsWith('j')) return;
+        const key = low.replace(/\./g, '');
+        if (KNOWN_MULT.has(key)) { peak.multiplicity = key; return; }
+        if (MULT_ALIASES[key]) { peak.multiplicity = MULT_ALIASES[key]; return; }
+      });
+    }
+    // Fix #5: infer nH from multiplicity for chart height if not provided
+    if (peak.nH === null) {
+      peak.nH = inferNH(peak.multiplicity);
+    }
+    peaks.push(peak);
+  }
+  return peaks;
+}
+
+// ── Canvas stick chart ─────────────────────────────────────────────────────
+// ── Spectrum rendering — mimics real NMR/IR plot conventions ────────────────
+//   NMR: x-axis runs HIGH→LOW ppm (chemistry convention), fixed scale,
+//        tick marks, peak height varies with integration (nH) when known.
+//   IR:  x-axis runs HIGH→LOW wavenumber (4000→400 cm⁻¹), peaks point
+//        DOWN from a 100%-transmittance baseline, mimicking a real IR trace.
+
+const NMR_RANGES = {
+  h1:  { min: -0.5, max: 13,   ticks: [0,2,4,6,8,10,12], unit: 'ppm' },
+  c13: { min: -5,   max: 220,  ticks: [0,40,80,120,160,200], unit: 'ppm' },
+};
+const IR_RANGE = { min: 400, max: 4000, ticks: [500,1000,1500,2000,2500,3000,3500,4000], unit: 'cm⁻¹' };
+
+function drawChart(canvasId, emptyId, peakObjs, color, kind) {
+  const canvas = document.getElementById(canvasId);
+  const empty  = document.getElementById(emptyId);
+  const ctx    = canvas.getContext('2d');
+  const dpr    = window.devicePixelRatio || 1;
+  const rect   = canvas.parentElement.getBoundingClientRect();
+
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width  = rect.width  + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  if (!peakObjs || peakObjs.length === 0) {
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.style.display = 'none';
+
+  if (kind === 'ir') {
+    drawIRChart(ctx, rect, peakObjs, color);
+  } else {
+    drawNMRChart(ctx, rect, peakObjs, color, NMR_RANGES[kind]);
+  }
+}
+
+function drawNMRChart(ctx, rect, peaks, color, range) {
+  const W = rect.width, H = rect.height;
+  const pad = { l: 6, r: 6, t: 10, b: 20 };
+  const plotW = W - pad.l - pad.r;
+  const baseline = H - pad.b;
+  const topY     = pad.t;
+
+  // X-axis is REVERSED: high ppm on the left, low ppm on the right
+  const toX = v => pad.l + (1 - (v - range.min) / (range.max - range.min)) * plotW;
+
+  // Baseline
+  ctx.strokeStyle = '#D8D6CE';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(pad.l, baseline);
+  ctx.lineTo(W - pad.r, baseline);
+  ctx.stroke();
+
+  // Tick marks only (no number labels — the input box already shows values)
+  ctx.strokeStyle = '#E2E0D8';
+  range.ticks.forEach(t => {
+    const x = toX(t);
+    if (x < pad.l - 2 || x > W - pad.r + 2) return;
+    ctx.beginPath();
+    ctx.moveTo(x, baseline);
+    ctx.lineTo(x, baseline + 3);
+    ctx.stroke();
+  });
+
+  if (peaks.length === 0) return;
+
+  // ── Each peak becomes a cluster of "lines" (a multiplet pattern) ─────────
+  // Multiplicity → relative intensities of each line within the cluster
+  // (Pascal's-triangle-like, matching real n+1 splitting peak ratios),
+  // and the x-spacing between them. This is what makes it read as a real
+  // spectrum rather than abstract sticks: a doublet is two close lines,
+  // a quartet is four lines with a 1:3:3:1 height ratio, etc.
+  // Spacing is defined as a FRACTION of plot width so it scales with the
+  // chart's actual pixel size instead of using fixed px values that blow
+  // up or shrink unpredictably depending on container width.
+  const MULTIPLET_PATTERNS = {
+    s:   { spacingFrac: 0,      heights: [1] },
+    d:   { spacingFrac: 0.012,  heights: [1, 1] },
+    t:   { spacingFrac: 0.010,  heights: [1, 2, 1] },
+    q:   { spacingFrac: 0.009,  heights: [1, 3, 3, 1] },
+    p:   { spacingFrac: 0.008,  heights: [1, 4, 6, 4, 1] },
+    dd:  { spacingFrac: 0.009,  heights: [1, 1, 1, 1] },
+    ddd: { spacingFrac: 0.007,  heights: [1, 1, 1, 1, 1, 1, 1, 1] },
+    dt:  { spacingFrac: 0.009,  heights: [1, 2, 1, 1, 2, 1] },
+    td:  { spacingFrac: 0.009,  heights: [1, 1, 2, 2, 1, 1] },
+  };
+  // Multiplet "m" — drawn as a small irregular hump cluster, not discrete lines
+
+  const maxNH = Math.max(1, ...peaks.map(p => p.nH || 1));
+  const lineW = Math.max(plotW * 0.0022, 0.75);
+
+  // Find the smallest gap (in px) between adjacent peak centers, so we can
+  // cap multiplet spread and prevent neighbouring peaks' splitting patterns
+  // from visually merging into each other.
+  const centers = peaks.map(p => toX(p.shift)).sort((a, b) => a - b);
+  let minGap = plotW;
+  for (let i = 1; i < centers.length; i++) {
+    minGap = Math.min(minGap, centers[i] - centers[i - 1]);
+  }
+  const maxClusterWidth = Math.max(minGap * 0.55, 6);  // never wider than ~55% of gap to neighbour
+
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+
+  peaks.forEach(p => {
+    const cx = toX(p.shift);
+    const hFrac = 0.5 + 0.46 * ((p.nH || 1) / maxNH);     // overall peak height
+    const peakH  = (baseline - topY) * hFrac;
+
+    if (p.multiplicity === 'm') {
+      // Multiplet: irregular cluster of jagged narrow lines, like a
+      // bundle of overlapping signals — visually distinct from clean splits.
+      const n = 5;
+      const spread = Math.min(plotW * 0.012, maxClusterWidth);
+      for (let i = 0; i < n; i++) {
+        const dx = (i - (n - 1) / 2) * (spread / n);
+        const jitter = Math.sin(i * 2.4) * 0.35 + 0.65;  // pseudo-random height variation
+        ctx.lineWidth = lineW;
+        ctx.beginPath();
+        ctx.moveTo(cx + dx, baseline);
+        ctx.lineTo(cx + dx, baseline - peakH * jitter);
+        ctx.stroke();
+      }
+      return;
+    }
+
+    const pattern = p.multiplicity && MULTIPLET_PATTERNS[p.multiplicity]
+      ? MULTIPLET_PATTERNS[p.multiplicity]
+      : { spacingFrac: 0, heights: [1] };   // unknown/none → plain singlet line
+
+    const lines = pattern.heights;
+    const n = lines.length;
+    const maxH = Math.max(...lines);
+
+    // Raw spacing scaled to plot width, then clamped so the full cluster
+    // never exceeds maxClusterWidth (prevents overlap with neighbours).
+    let spacing = plotW * pattern.spacingFrac;
+    const clusterSpan = spacing * (n - 1);
+    if (clusterSpan > maxClusterWidth && n > 1) {
+      spacing = maxClusterWidth / (n - 1);
+    }
+
+    lines.forEach((relH, i) => {
+      const dx = (i - (n - 1) / 2) * spacing;
+      const h  = peakH * (0.35 + 0.65 * (relH / maxH));  // tallest line = full peakH
+      ctx.lineWidth = lineW;
+      ctx.beginPath();
+      ctx.moveTo(cx + dx, baseline);
+      ctx.lineTo(cx + dx, baseline - h);
+      ctx.stroke();
+    });
+  });
+}
+
+function drawIRChart(ctx, rect, peaks, color) {
+  const W = rect.width, H = rect.height;
+  const pad = { l: 8, r: 8, t: 14, b: 22 };
+  const plotW = W - pad.l - pad.r;
+  const topY     = pad.t;          // 100% transmittance line
+  const baseline = H - pad.b;      // 0% transmittance line
+
+  // X-axis REVERSED: 4000 cm⁻¹ on the left, 400 on the right (IR convention)
+  const toX = v => pad.l + (1 - (v - IR_RANGE.min) / (IR_RANGE.max - IR_RANGE.min)) * plotW;
+
+  // 100%T baseline (top line, where the trace sits when nothing absorbs)
+  ctx.strokeStyle = '#D8D6CE';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(pad.l, topY);
+  ctx.lineTo(W - pad.r, topY);
+  ctx.stroke();
+
+  // Tick marks only (no numbers — input box already shows exact values)
+  ctx.strokeStyle = '#E2E0D8';
+  IR_RANGE.ticks.forEach(t => {
+    const x = toX(t);
+    if (x < pad.l - 2 || x > W - pad.r + 2) return;
+    ctx.beginPath();
+    ctx.moveTo(x, baseline);
+    ctx.lineTo(x, baseline + 3);
+    ctx.stroke();
+  });
+
+  // Build a smooth absorption trace: each peak is an independent downward
+  // dip (Lorentzian-like) from the 100%T baseline. Where dips from nearby
+  // peaks overlap, take the DEEPEST one at each x rather than summing —
+  // summing caused unrealistic flat-bottom clipping when peaks were close.
+  const sortedPeaks = [...peaks].sort((a,b) => a.shift - b.shift);
+  const dipDepth = (baseline - topY) * 0.82;  // how far peaks dip down
+  const dipWidth = 10;                          // px half-width of each dip
+
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  const steps = 260;
+  let first = true;
+  for (let i = 0; i <= steps; i++) {
+    const frac = i / steps;
+    const wn   = IR_RANGE.max - frac * (IR_RANGE.max - IR_RANGE.min);
+    const x    = toX(wn);
+    // Deepest dip wins at this x (not summed) — keeps individual peaks
+    // visually distinct even when close together.
+    let maxDip = 0;
+    sortedPeaks.forEach(p => {
+      const px = toX(p.shift);
+      const d  = x - px;
+      const dip = dipDepth / (1 + (d / (dipWidth * 0.5)) ** 2);
+      if (dip > maxDip) maxDip = dip;
+    });
+    const y = topY + Math.min(maxDip, dipDepth);
+    if (first) { ctx.moveTo(x, y); first = false; }
+    else       { ctx.lineTo(x, y); }
+  }
+  ctx.stroke();
+}
+
+function refreshChart(fid) {
+  const el   = document.getElementById(`input-${fid}`);
+  const text = el.classList.contains('placeholder-active') ? '' : el.value;
+  const peaks = parseRichPeaksClient(text);
+  const kind  = fid === 'ir' ? 'ir' : fid;  // 'h1' | 'c13' | 'ir'
+  drawChart(`chart-${fid}`, `empty-${fid}`, peaks, COLORS[fid], kind);
+}
+
+// ── Input handling ─────────────────────────────────────────────────────────
+function setField(fid, value) {
+  const el = document.getElementById(`input-${fid}`);
+  el.value = value;
+  if (value) {
+    el.classList.remove('placeholder-active');
+  } else {
+    el.classList.add('placeholder-active');
+  }
+  refreshChart(fid);
+  checkRejectedPeaks(fid, value);
+}
+
+function getShifts(fid) {
+  return parsePeaks(document.getElementById(`input-${fid}`).value);
+}
+
+function getRawText(fid) {
+  const el  = document.getElementById(`input-${fid}`);
+  const val = el.value.trim();
+  // Don't send the placeholder text as real input
+  if (el.classList.contains('placeholder-active')) return '';
+  return val;
+}
+
+// ── Fix #6: track rejected peaks and warn user ────────────────────────────────
+const PEAK_RANGES = {
+  h1:  { min: -2,   max: 14   },
+  c13: { min: -5,   max: 220  },
+  ir:  { min: 400,  max: 4000 },
+};
+
+function checkRejectedPeaks(fid, text) {
+  if (!text || text.trim() === '' || document.getElementById(`input-${fid}`).classList.contains('placeholder-active')) {
+    updatePeakBadge(fid, 0, 0);
+    return;
+  }
+  const allNums = (text.match(/-?\d+\.?\d*/g) || []).map(Number).filter(v => !isNaN(v) && v !== 0);
+  const range   = PEAK_RANGES[fid];
+  const valid   = allNums.filter(v => v >= range.min && v <= range.max);
+  const rejected = allNums.length - valid.length;
+  updatePeakBadge(fid, valid.length, rejected);
+}
+
+function updatePeakBadge(fid, validCount, rejectedCount) {
+  let badge = document.getElementById(`badge-${fid}`);
+  if (!badge) return;
+  if (validCount === 0) {
+    badge.style.display = 'none';
+    return;
+  }
+  badge.style.display = 'inline';
+  if (rejectedCount > 0) {
+    badge.textContent  = `${validCount} peaks · ${rejectedCount} rejected ⚠`;
+    badge.style.color  = 'var(--amber)';
+    badge.style.background = 'var(--amber-lt)';
+  } else {
+    badge.textContent  = `${validCount} peaks`;
+    badge.style.color  = 'var(--teal)';
+    badge.style.background = 'var(--teal-lt)';
+  }
+}
+
+// Bind input events
+['h1','c13','ir'].forEach(fid => {
+  const el = document.getElementById(`input-${fid}`);
+  el.addEventListener('input', () => {
+    el.classList.toggle('placeholder-active', !el.value.trim());
+    refreshChart(fid);
+    checkRejectedPeaks(fid, el.value);
+  });
+});
+
+// ── File upload ────────────────────────────────────────────────────────────
+function handleFile(fid, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const raw = e.target.result;
+
+    // Strip comment lines (# ...) and JCAMP headers (## ..., $ ...)
+    // and any blank lines, then join remaining content
+    const cleaned = raw.split('\n')
+      .filter(l => {
+        const t = l.trim();
+        return t.length > 0
+          && !t.startsWith('#')
+          && !t.startsWith('$')
+          && !t.startsWith('>');
+      })
+      .join(' ');
+
+    // Extract all numbers from the cleaned text
+    const allNums = cleaned.match(/-?\d+\.?\d*/g)
+      ?.map(Number).filter(v => !isNaN(v)) || [];
+
+    // Filter to chemically plausible shift/wavenumber ranges per field:
+    //   1H NMR  :  -2  to  14  ppm
+    //   13C NMR :  -5  to  220 ppm
+    //   IR      :  400 to 4000 cm⁻¹
+    // This rejects stray values like "400" (MHz frequency), "100" (MHz),
+    // line numbers, integration values > expected range, etc.
+    const RANGES = {
+      h1:  { min: -2,   max: 14   },
+      c13: { min: -5,   max: 220  },
+      ir:  { min: 400,  max: 4000 },
+    };
+    const range = RANGES[fid];
+    const peaks = range
+      ? allNums.filter(v => v >= range.min && v <= range.max)
+      : allNums;
+
+    if (peaks.length === 0) {
+      alert(`No valid peaks found in this file for ${fid === 'h1' ? '¹H' : fid === 'c13' ? '¹³C' : 'IR'} range.`);
+      input.value = '';
+      return;
+    }
+
+    // Re-parse the original text lines to try to keep rich annotations
+    // (multiplicity, nH) if the file has them — pass the cleaned annotated
+    // lines rather than the bare number list so the text box shows the
+    // full Mnova-style annotation.
+    // Preserve rich annotations: filter lines that START with a valid shift,
+    // but keep the whole line including any (multiplicity, J, nH) annotation.
+    // This means Mnova-style "7.34 (d, J=8.1, 1H)" survives intact.
+    const richLines = raw.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0
+        && !l.startsWith('#')
+        && !l.startsWith('$')
+        && !l.startsWith('>')
+        && !l.startsWith('Shift')   // skip CSV header rows
+        && !l.startsWith('shift'))
+      .filter(l => {
+        const firstNum = parseFloat(l);
+        return !isNaN(firstNum) && firstNum >= range.min && firstNum <= range.max;
+      });
+
+    if (richLines.length === 0) {
+      alert(`No valid peaks found in range ${range.min}–${range.max} for this spectrum type.\nCheck that you are uploading the right file for this input panel.`);
+      input.value = '';
+      return;
+    }
+
+    setField(fid, richLines.join(', '));
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+// ── Demo ───────────────────────────────────────────────────────────────────
+function toggleDemoMenu() {
+  document.getElementById('demo-menu').classList.toggle('open');
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.demo-wrap')) {
+    document.getElementById('demo-menu').classList.remove('open');
+  }
+});
+
+function loadDemo(name) {
+  document.getElementById('demo-menu').classList.remove('open');
+  const demo = DEMOS[name];
+  setField('h1',  demo.h1);
+  setField('c13', demo.c13);
+  setField('ir',  demo.ir);
+  // Store force_model for when user clicks Predict
+  window._demoForceModel = demo.force_model;
+}
+
+// ── Predict ────────────────────────────────────────────────────────────────
+async function runPredict(forceModel = false) {
+  // If a demo was loaded, use its force_model setting
+  if (window._demoForceModel !== undefined && forceModel === false) {
+    forceModel = window._demoForceModel;
+    window._demoForceModel = undefined;
+  }
+  // Send raw text so the server's rich parser can extract
+  // shift + multiplicity + nH + J when present, not just shifts.
+  const h1Text  = getRawText('h1');
+  const c13Text = getRawText('c13');
+  const irText  = getRawText('ir');
+
+  if (!h1Text && !c13Text && !irText) {
+    setStatus('Please enter at least one set of spectral peaks.', 'var(--red)');
+    return;
+  }
+
+  const btn = document.getElementById('predict-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Running…';
+  setStatus('Searching database…', 'var(--amber)');
+
+  try {
+    const res  = await fetch('/predict', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        h1: h1Text, c13: c13Text, ir: irText,
+        force_model: forceModel
+      }),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      setStatus(data.error, 'var(--red)');
+      return;
+    }
+
+    if (data.top.warning) {
+      console.warn('Model warning:', data.top.warning);
+    }
+
+    topMatch    = data.top;
+    altList     = data.alts;
+    selectedIdx = 0;   // 0 = topMatch (row 1); 1-4 = altList[0..3] (rows 2-5)
+
+    showTop(data.top);
+    showAlts();
+
+    const source = data.top.source;
+    const verified = data.top.verified;
+    const statusMap = {
+      'database': 'DB match',
+      'model+db': 'Model · DB verified ✓',
+      'model':    'Model prediction',
+      'demo':     'Demo',
+    };
+    setStatus(
+      `${statusMap[source] || source} · ${data.alts.length} alternatives`,
+      source === 'database' ? 'var(--teal)' : verified ? 'var(--teal)' : 'var(--purple)'
+    );
+
+  } catch(err) {
+    setStatus('Server error — is server.py running?', 'var(--red)');
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '▶  Predict';
+  }
+}
+
+// ── Display top match ──────────────────────────────────────────────────────
+function showTop(candidate) {
+  // Source badge
+  const badge = document.getElementById('source-badge');
+  badge.style.display = 'inline';
+  const badgeMap = {
+    'model+db': ['DB verified ✓', 'badge-db'],
+    'model':    ['model',          'badge-model'],
+    'database': ['DB match',       'badge-db'],
+    'demo':     ['demo',           'badge-demo'],
+  };
+  const [txt, cls] = badgeMap[candidate.source] || ['?', 'badge-demo'];
+  badge.textContent = txt;
+  badge.className   = `badge ${cls}`;
+
+  // Confidence
+  document.getElementById('conf-label').textContent =
+    `${Math.round(candidate.score * 100)}% confidence`;
+
+  // Molecule SVG
+  const viewer = document.getElementById('mol-viewer');
+  if (candidate.svg) {
+    viewer.innerHTML = candidate.svg;
+    const svg = viewer.querySelector('svg');
+    if (svg) {
+      svg.style.width     = '100%';
+      svg.style.height    = '100%';
+      svg.style.maxWidth  = '460px';
+      svg.style.maxHeight = '100%';
+      // Remove white background rect from RDKit SVG
+      const rects = svg.querySelectorAll('rect');
+      rects.forEach(r => {
+        if (r.getAttribute('fill') === 'white' || r.getAttribute('style')?.includes('white')) {
+          r.setAttribute('fill', 'transparent');
+        }
+      });
+    }
+  } else {
+    viewer.innerHTML = `<div class="mol-empty">
+      <div class="mol-empty-hex">⚠</div>
+      <p>Could not render structure</p>
+      <small>${candidate.smiles}</small>
+    </div>`;
+  }
+
+  // SMILES
+  document.getElementById('smiles-value').textContent = candidate.smiles;
+
+  // Properties
+  const props = candidate.props || {};
+  document.getElementById('prop-formula').textContent = props.formula || '—';
+  document.getElementById('prop-mw').textContent      = props.mw      || '—';
+  document.getElementById('prop-atoms').textContent   = props.atoms   || '—';
+}
+
+// ── Display alternatives ───────────────────────────────────────────────────
+function showAlts() {
+  // Always show 5 rows: row 0 = topMatch (rank #1), rows 1-4 = altList[0..3]
+  // (ranks #2-5). This is one continuous, never-reordered list — selecting
+  // any row just changes what's displayed in the Top Match panel above,
+  // it never removes or reshuffles entries.
+  const combined = [topMatch, ...altList].filter(Boolean);
+
+  const list = document.getElementById('alts-list');
+  list.innerHTML = '';
+
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement('div');
+    row.className = 'alt-row' + (selectedIdx === i ? ' selected' : '');
+    if (i < 4) row.style.borderBottom = '1px solid var(--border)';
+
+    if (i < combined.length) {
+      const c = combined[i];
+      row.innerHTML = `
+        <span class="alt-num">${i+1}.</span>
+        <div class="alt-mol-preview">${c.svg || ''}</div>
+        <span class="alt-smiles">${c.smiles}</span>
+        <span class="alt-score">${Math.round(c.score*100)}%</span>
+      `;
+      row.addEventListener('click', () => pickAlt(i));
+    } else {
+      row.classList.add('disabled');
+      row.innerHTML = `
+        <span class="alt-num">${i+1}.</span>
+        <span class="alt-smiles" style="color:var(--text3)">—</span>
+      `;
+    }
+    list.appendChild(row);
+  }
+}
+
+function pickAlt(idx) {
+  const combined = [topMatch, ...altList].filter(Boolean);
+  if (idx >= combined.length) return;
+
+  // Only changes what's DISPLAYED in the Top Match panel — topMatch and
+  // altList themselves are never reordered, so the numbered list always
+  // stays fixed: 1 = original top match, 2-5 = alternatives in rank order.
+  selectedIdx = idx;
+  const shown = combined[idx];
+
+  document.getElementById('conf-label').textContent =
+    `${Math.round(shown.score * 100)}% confidence`;
+  showTop(shown);
+  showAlts();   // redraw to update the highlighted row
+}
+
+// ── Clear all ─────────────────────────────────────────────────────────────
+function clearAll() {
+  ['h1','c13','ir'].forEach(fid => setField(fid, ''));
+  topMatch    = null;
+  altList     = [];
+  selectedIdx = 0;
+  window._demoForceModel = undefined;
+
+  // Reset right panel
+  document.getElementById('mol-viewer').innerHTML = `
+    <div class="mol-empty">
+      <div class="mol-empty-hex">⬡</div>
+      <p>Enter spectra and click <strong>Predict</strong></p>
+      <small>or load a Demo to get started</small>
+    </div>`;
+  document.getElementById('smiles-value').textContent = '—';
+  document.getElementById('source-badge').style.display = 'none';
+  document.getElementById('conf-label').textContent = '';
+  document.getElementById('prop-formula').textContent = '—';
+  document.getElementById('prop-mw').textContent = '—';
+  document.getElementById('prop-atoms').textContent = '—';
+  setStatus('', '');
+
+  // Reset alts
+  const list = document.getElementById('alts-list');
+  list.innerHTML = '';
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement('div');
+    row.className = 'alt-row disabled';
+    if (i < 4) row.style.borderBottom = '1px solid var(--border)';
+    row.innerHTML = `<span class="alt-num">${i+1}.</span>
+      <span class="alt-smiles" style="color:var(--text3)">—</span>`;
+    list.appendChild(row);
+  }
+}
+
+// ── Copy SMILES ────────────────────────────────────────────────────────────
+function copySmiles() {
+  const val = document.getElementById('smiles-value').textContent;
+  if (val && val !== '—') {
+    navigator.clipboard.writeText(val);
+    setStatus('SMILES copied ✓', 'var(--teal)');
+    setTimeout(() => setStatus('', 'var(--text2)'), 1800);
+  }
+}
+
+// ── Status ─────────────────────────────────────────────────────────────────
+function setStatus(msg, color) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.style.color = color || 'var(--text2)';
+}
+
+// ── Init charts on load ────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  ['h1','c13','ir'].forEach(fid => {
+    const canvas = document.getElementById(`chart-${fid}`);
+    const rect   = canvas.parentElement.getBoundingClientRect();
+    canvas.width  = rect.width;
+    canvas.height = rect.height;
+    drawChart(`chart-${fid}`, `empty-${fid}`, [], COLORS[fid]);
+  });
+});
+
+window.addEventListener('resize', () => {
+  ['h1','c13','ir'].forEach(fid => refreshChart(fid));
+});
+</script>
+</body>
+</html>

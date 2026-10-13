@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Training data (~20 GB) — see README
+data/
+
+# Model weights (too large for GitHub's 100 MB limit) — distribute via a Release
+*.pt
+
+# Raw NMRShiftDB SDF (158 MB); the derived search_data/nmrshiftdb.parquet is committed
+search_data/*.sd
+
+# Local-only
+archive/
+training.log
+.claude/
