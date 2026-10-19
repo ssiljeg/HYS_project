@@ -100,6 +100,19 @@ def dept_only_intensity(intensity):
     return carbon_intensity(n_h)
 
 
+# ── Target SMILES ──────────────────────────────────────────────────────────────
+def strip_stereo(smiles):
+    """Canonical SMILES without stereochemistry (isotopes kept), or None if
+    unparseable. 1D NMR/IR can't distinguish stereoisomers, so the model is
+    trained, and scored, on stereo-free structures."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    Chem.RemoveStereochemistry(mol)
+    return Chem.MolToSmiles(mol)
+
+
 # ── Molecular formula ──────────────────────────────────────────────────────────
 def formula_counts_from_smiles(smiles):
     """Element counts (incl. implicit H) for a SMILES, or None if it doesn't parse."""
@@ -258,6 +271,8 @@ class SpectraToSmilesDataset(Dataset):
         self.c_nmr_peaks = df['c_nmr_peaks'].values
         self.ir = df['ir_spectra'].values
         self.smiles = df['smiles'].values
+        # Training targets have stereochemistry removed (see strip_stereo)
+        self.targets = [strip_stereo(s) or s for s in self.smiles]
 
         self.tokenizer = tokenizer
         self.max_smiles_length = max_smiles_length
@@ -288,7 +303,7 @@ class SpectraToSmilesDataset(Dataset):
 
         formula = encode_formula(
             formula_counts_from_smiles(self.smiles[idx]) if formula_known else None)
-        target_ids = self.tokenizer.encode(self.smiles[idx], self.max_smiles_length)
+        target_ids = self.tokenizer.encode(self.targets[idx], self.max_smiles_length)
 
         return (
             torch.tensor(h_features, dtype=torch.float32),

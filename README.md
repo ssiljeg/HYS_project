@@ -4,7 +4,11 @@ Predicts a molecular structure (SMILES + 2D drawing) from ¹H NMR, ¹³C NMR and
 
 Each prediction runs in two stages:
 1. **Database lookup.** Peaks are matched against NMRShiftDB (`search_data/nmrshiftdb.parquet`).
-2. **Model.** A Transformer encoder–decoder (`best_model.pt`) generates candidates with beam search to fill the remaining slots.
+2. **Model.** A Transformer encoder–decoder (`best_model.pt`) generates 20 candidates with beam search. If a molecular formula was given, candidates with the wrong formula drop to the bottom. These fill the remaining slots. (`server.py` also has an optional carbon-count reranking, `RERANK_C_WEIGHT`. It's off because it didn't improve benchmark accuracy.)
+
+Stereochemistry is ignored throughout: 1D NMR and IR can't distinguish
+stereoisomers, so the model is trained on stereo-free SMILES and predictions
+are scored without stereo.
 
 ## Setup
 
@@ -97,8 +101,11 @@ python evaluator.py         # beam-search metrics on clean held-out data
 python benchmark.py         # accuracy for realistic web-app input
 ```
 
-`chunked_trainer.py` (with its default `WEIGHTS_ONLY_MODE = True`) warm-starts
-from `best_model.pt`. The first run after upgrading from a version 1 model:
+By default (`WEIGHTS_ONLY_MODE = False`) `chunked_trainer.py` resumes exactly
+from `checkpoint.pt` and trains until `NUM_OUTER_EPOCHS`; raise that number to
+train longer. Set `WEIGHTS_ONLY_MODE = True` to start a fresh run from
+`best_model.pt`'s weights instead, which is required after changing the
+architecture or input version. When upgrading from a version 1 model, that run:
 - backs up the old model to `best_model_v1.pt`
 - starts the new formula layer from scratch, keeping all other weights
 - resets the best validation loss, since validation now uses degraded input
@@ -107,13 +114,15 @@ Training samples are randomly degraded (`AUGMENT` in `preprocessor.py`) to look
 like real input: missing spectra, hidden integrations/multiplicities/DEPT info,
 shift noise, missed peaks, IR rebuilt from picked peaks, and a formula given
 half the time. Validation uses the same degradation with a fixed seed, so expect
-higher validation loss than with version 1. Compare models with
-`benchmark.py`, not val loss.
+higher validation loss than with version 1. The final report prints exact-match
+and Tanimoto for both **realistic** (degraded) and **clean** input. Only the
+clean numbers are comparable with version 1 runs. Use `benchmark.py` to compare
+models on realistic web-app input.
 
 ## Benchmark
 
 `benchmark.py` runs held-out molecules through the web app's model path (no
 database lookup), with added shift noise, for different input scenarios. It
-reports how often the exact structure is the top answer (top-1) or among the five
-shown (top-5), plus the Tanimoto similarity of the top answer to the truth.
-Run it before and after retraining to compare.
+reports how often the exact structure (ignoring stereochemistry) is the top
+answer (top-1) or among the five shown (top-5), plus the Tanimoto similarity of
+the top answer to the truth. Run it before and after retraining to compare.

@@ -167,7 +167,7 @@ if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 from preprocessor import (encode_h_peaks, encode_c_peaks, make_peak_mask,
                           ir_from_peaks, encode_formula, parse_formula,
-                          formula_counts_from_smiles, carbon_intensity,
+                          formula_counts_from_smiles, carbon_intensity, strip_stereo,
                           C13_TYPICAL_INTENSITY)
 
 
@@ -192,6 +192,8 @@ def get_db():
     if _db is None and os.path.exists(DB_PATH):
         import pandas as pd
         _db = pd.read_parquet(DB_PATH)
+        # Stereo-free key for matching model candidates (which have no stereo)
+        _db["smiles_nostereo"] = _db["smiles"].map(canonical)
     return _db
 
 
@@ -275,17 +277,11 @@ def db_verify_candidate(smiles, h1_shifts, c13_shifts):
     if df is None:
         return None
 
-    try:
-        from rdkit import Chem, RDLogger
-        RDLogger.DisableLog("rdApp.*")
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        canonical = Chem.MolToSmiles(mol)
-    except Exception:
+    key = canonical(smiles)
+    if key is None:
         return None
 
-    rows = df[df["smiles"] == canonical]
+    rows = df[df["smiles_nostereo"] == key]
     if rows.empty:
         return None   # not in DB — can't verify either way
 
@@ -444,11 +440,11 @@ def build_c_peaks(rich_peaks, guess_unknown=True):
 
 
 def canonical(smiles):
-    """Canonical SMILES, or None if RDKit can't parse it."""
-    from rdkit import Chem, RDLogger
+    """Stereo-free canonical SMILES, or None if RDKit can't parse it. 1D NMR/IR
+    can't tell stereoisomers apart, so they count as the same candidate."""
+    from rdkit import RDLogger
     RDLogger.DisableLog("rdApp.*")
-    mol = Chem.MolFromSmiles(smiles)
-    return Chem.MolToSmiles(mol) if mol else None
+    return strip_stereo(smiles)
 
 
 def apply_formula(candidates, formula_counts):
@@ -463,6 +459,22 @@ def apply_formula(candidates, formula_counts):
         c["formula_match"] = formula_counts_from_smiles(c["smiles"]) == formula_counts
     matches = [c for c in candidates if c["formula_match"]]
     return matches if matches else candidates
+
+
+# Score penalty per carbon environment of mismatch between a candidate and the
+# 13C peak count. 0 = off. Tuning on held-out molecules suggested +3-6 points
+# top-1 at 0.02, but it didn't generalize: on benchmark.py's molecules it was
+# neutral-to-worse (peak counts often differ from environment counts through
+# overlaps and C-F splitting). Kept for re-testing with future models.
+RERANK_C_WEIGHT = 0
+
+
+def carbon_environments(smiles):
+    """Number of symmetry-distinct carbons, i.e. expected 13C peak count."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    ranks = Chem.CanonicalRankAtoms(mol, breakTies=False)
+    return len({r for a, r in zip(mol.GetAtoms(), ranks) if a.GetSymbol() == "C"})
 
 
 def model_predict(h1_peaks, c13_peaks, ir_shifts, beam_width=5, formula_counts=None):
@@ -517,7 +529,17 @@ def model_predict(h1_peaks, c13_peaks, ir_shifts, beam_width=5, formula_counts=N
             if can is None or can in seen:
                 continue
             seen.add(can)
-            out.append({"smiles": can, "score": round(float(sc), 4), "source": "model"})
+            out.append({"smiles": can, "score": float(sc), "source": "model"})
+
+        # Rerank: a structure whose number of distinct carbon environments
+        # differs from the number of 13C peaks given is less likely right.
+        if c_peaks and RERANK_C_WEIGHT:
+            for c in out:
+                gap = abs(carbon_environments(c["smiles"]) - len(c_peaks))
+                c["score"] = max(0.0, c["score"] - RERANK_C_WEIGHT * gap)
+            out.sort(key=lambda c: c["score"], reverse=True)
+        for c in out:
+            c["score"] = round(c["score"], 4)
         return out
 
     except Exception as e:
@@ -620,8 +642,8 @@ def predict():
     # and can propose structures the DB doesn't contain.
     # force_model=True (demos) bypasses DB and goes straight to model.
     # If a molecular formula is given, it's the strongest constraint we have:
-    # DB hits that don't match are dropped, and the model searches wider
-    # (bigger beam) so enough formula-matching candidates survive.
+    # DB hits that don't match are dropped. The model's beam is wide (20) so
+    # the formula filter and carbon-count reranking have candidates to pick from.
 
     DB_VERIFY_THRESHOLD = 0.25   # minimum bidirectional score to count as a hit
     SLOTS = 5                    # total candidates to return
@@ -646,7 +668,7 @@ def predict():
     slots_needed = SLOTS - len(db_hits)
     model_candidates = model_predict(
         h1_peaks, c13_peaks, ir_shifts,
-        beam_width=20 if formula_counts else 10,
+        beam_width=20,
         formula_counts=formula_counts,
     )
     model_candidates = apply_formula(model_candidates, formula_counts)

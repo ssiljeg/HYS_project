@@ -75,7 +75,8 @@ def main():
 
     model, _ = server.get_model()
     print(f"Model input_version={model.input_version} | n={args.n} | "
-          f"shift noise={'off' if noise is None else noise}\n")
+          f"shift noise={'off' if noise is None else noise} | "
+          f"rerank weight={server.RERANK_C_WEIGHT}\n")
 
     files = get_parquet_files(FOLDER)
     random.seed(42)
@@ -92,7 +93,7 @@ def main():
             h = to_rich_h(row.h_nmr_peaks, h_mode == "ann", rng, noise) if h_mode else []
             c = to_rich_c(row.c_nmr_peaks, c_mode, rng, noise) if c_mode else []
             fc = formula if use_formula else None
-            cands = server.model_predict(h, c, [], beam_width=20 if fc else 10,
+            cands = server.model_predict(h, c, [], beam_width=20,
                                          formula_counts=fc)
             cands = server.apply_formula(cands, fc)
             smiles = [c["smiles"] for c in cands]
@@ -108,7 +109,7 @@ def main():
     print(f"\n\n{'scenario':32s} {'top-1':>6s} {'top-5':>6s} {'similarity':>11s}")
     for name, r in results.items():
         print(f"{name:32s} {r['top1']/n:6.0%} {r['top5']/n:6.0%} {r['sim']/n:11.2f}")
-    print("\ntop-1/top-5 = exact structure is the first / among the five shown;"
+    print("\ntop-1/top-5 = exact structure (ignoring stereochemistry) is the first / among the five shown;"
           "\nsimilarity = Tanimoto of the first answer to the truth (1.0 = identical).")
 
 

@@ -45,7 +45,7 @@ CHUNK_SIZE        = 10    # parquet files per chunk (reduced from 25 — the new
                           # own per-batch forward/backward memory footprint)
 NUM_VAL_FILES     = 5     # files held out for validation, never trained on
 EPOCHS_PER_CHUNK  = 1     # passes over each chunk before moving on
-NUM_OUTER_EPOCHS  = 10    # how many times to loop through ALL chunks
+NUM_OUTER_EPOCHS  = 30    # how many times to loop through ALL chunks (total, incl. resumed ones)
 BATCH_SIZE        = 32
 LEARNING_RATE     = 1e-4
 VAL_EVERY_N_CHUNKS = 24   # scaled up from 10 to match the new, higher chunk count
@@ -74,6 +74,12 @@ MAX_SAMPLING_RATE     = 0.3
 LR_PATIENCE = 5
 LR_FACTOR   = 0.5
 LR_MIN      = 1e-5
+
+# Learning rate to switch to when resuming from checkpoint.pt (None = keep the
+# saved one). Set when val loss has flattened but the scheduler hasn't cut
+# the LR yet — in the first v1 run, the LR drop to 5e-5 gave the biggest
+# late gains.
+RESUME_LR   = 3e-5
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -163,17 +169,23 @@ def warm_start(model, path, device):
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
-def build_val_loader(val_files, tokenizer, config):
+def build_val_loaders(val_files, tokenizer, config):
+    """Returns (realistic, clean) loaders over the same held-out molecules:
+    realistic = degraded like real user input (used for val loss / checkpoints),
+    clean     = complete simulated data (comparable with input_version 1 runs)."""
     log(f"Loading {len(val_files)} held-out validation files...")
     val_df = load_specific_files(val_files)
-    val_ds = SpectraToSmilesDataset(
-        val_df, tokenizer,
-        max_smiles_length=config["max_smiles_length"],
-        max_h_peaks=config["max_h_peaks"],
-        max_c_peaks=config["max_c_peaks"],
-        augment="val",
-    )
-    return DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
+    loaders = []
+    for augment in ("val", None):
+        val_ds = SpectraToSmilesDataset(
+            val_df, tokenizer,
+            max_smiles_length=config["max_smiles_length"],
+            max_h_peaks=config["max_h_peaks"],
+            max_c_peaks=config["max_c_peaks"],
+            augment=augment,
+        )
+        loaders.append(DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False))
+    return tuple(loaders)
 
 
 def train_on_chunk(model, chunk_files, tokenizer, config,
@@ -318,6 +330,10 @@ def run_chunked_training(folder_path=FOLDER, resume=True, weights_only=False):
         start_outer, start_chunk, best_val_loss = load_checkpoint(
             RESUME_PATH, model, optimizer, scheduler, device
         )
+        if RESUME_LR is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = RESUME_LR
+            log(f"LR set to RESUME_LR={RESUME_LR:.1e}")
     elif resume and os.path.exists(SAVE_PATH):
         # Legacy: load weights-only checkpoint (old format)
         log(f"Loading weights-only checkpoint from {SAVE_PATH}")
@@ -333,7 +349,7 @@ def run_chunked_training(folder_path=FOLDER, resume=True, weights_only=False):
     else:
         log("Starting from scratch")
 
-    val_loader = build_val_loader(val_files, tokenizer, config)
+    val_loader, clean_val_loader = build_val_loaders(val_files, tokenizer, config)
 
     # ── Baseline ──────────────────────────────────────────────────────────────
     baseline = evaluate(model, val_loader, loss_fn, device)
@@ -427,16 +443,25 @@ def run_chunked_training(folder_path=FOLDER, resume=True, weights_only=False):
     log(f"\n{'='*60}")
     log("Final evaluation on held-out validation set")
     log(f"{'='*60}")
+    # Score the saved best model (what the web app will use), not whatever
+    # the last epoch happened to end on.
+    if os.path.exists(SAVE_PATH):
+        model.load_state_dict(torch.load(SAVE_PATH, map_location=device)["model_state_dict"])
+        log(f"Evaluating {SAVE_PATH} (best val loss {best_val_loss:.4f})")
+
+    # "realistic" is the degraded val set (what val loss uses); "clean" is
+    # complete data, the number to compare against input_version 1 runs.
     from evaluator import evaluate_model_beam_search
-    final_metrics = evaluate_model_beam_search(
-        model, val_loader, tokenizer, device,
-        max_length=config["max_smiles_length"],
-        beam_width=5,
-        max_batches=FINAL_EVAL_BATCHES,
-    )
-    log(f"Final validity rate    : {final_metrics['validity_rate']*100:.1f}%")
-    log(f"Final exact match rate : {final_metrics['exact_match_rate']*100:.1f}%")
-    log(f"Final avg Tanimoto sim : {final_metrics['avg_similarity']:.3f}")
+    for label, loader in (("realistic input", val_loader), ("clean input", clean_val_loader)):
+        final_metrics = evaluate_model_beam_search(
+            model, loader, tokenizer, device,
+            max_length=config["max_smiles_length"],
+            beam_width=5,
+            max_batches=FINAL_EVAL_BATCHES,
+        )
+        log(f"[{label}] validity rate    : {final_metrics['validity_rate']*100:.1f}%")
+        log(f"[{label}] exact match rate : {final_metrics['exact_match_rate']*100:.1f}%")
+        log(f"[{label}] avg Tanimoto sim : {final_metrics['avg_similarity']:.3f}")
     log(f"Best val loss achieved : {best_val_loss:.4f}")
 
     log(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
@@ -445,9 +470,11 @@ def run_chunked_training(folder_path=FOLDER, resume=True, weights_only=False):
 
 
 if __name__ == "__main__":
-    # Set weights_only=True to ignore checkpoint.pt's stored epoch/optimizer state
-    # and just continue training from best_model.pt's weights with a fresh
-    # optimizer/scheduler and outer_epoch counter starting back at 1.
-    WEIGHTS_ONLY_MODE = True
+    # False (default): resume exactly from checkpoint.pt — weights, optimizer,
+    #   scheduler and epoch counter — and train until NUM_OUTER_EPOCHS.
+    # True: ignore checkpoint.pt and start a fresh run (outer_epoch 1) from
+    #   best_model.pt's weights. Needed when upgrading to a new input_version
+    #   or model.py architecture, since checkpoint.pt can't be fully resumed then.
+    WEIGHTS_ONLY_MODE = False
 
     run_chunked_training(folder_path=FOLDER, resume=True, weights_only=WEIGHTS_ONLY_MODE)

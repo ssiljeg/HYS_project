@@ -80,12 +80,12 @@ def canonicalize(smiles: str):
     Two different SMILES strings can represent the SAME molecule
     (e.g. "CCO" and "OCC" are both ethanol) -- canonicalizing lets us
     compare fairly instead of just doing exact string matching.
+    Stereochemistry is removed: 1D NMR/IR can't distinguish stereoisomers, so
+    a prediction that differs only in @/@@ or /\ counts as correct.
     Returns None if invalid.
     """
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    return Chem.MolToSmiles(mol, canonical=True)
+    from preprocessor import strip_stereo
+    return strip_stereo(smiles)
 
 
 def tanimoto_similarity(smiles_a: str, smiles_b: str):
