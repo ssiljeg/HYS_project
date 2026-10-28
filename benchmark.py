@@ -106,10 +106,14 @@ def main():
               end="", flush=True)
 
     n = args.n
-    print(f"\n\n{'scenario':32s} {'top-1':>6s} {'top-5':>6s} {'similarity':>11s}")
+    # ± = 95% confidence margin (normal approximation) — differences smaller
+    # than this between two runs are likely noise.
+    pm = lambda k: f"{k/n:4.0%} ±{1.96 * ((k/n) * (1 - k/n) / n) ** 0.5:3.0%}"
+    print(f"\n\n{'scenario':32s} {'top-1':>10s} {'top-5':>10s} {'similarity':>11s}")
     for name, r in results.items():
-        print(f"{name:32s} {r['top1']/n:6.0%} {r['top5']/n:6.0%} {r['sim']/n:11.2f}")
-    print("\ntop-1/top-5 = exact structure (ignoring stereochemistry) is the first / among the five shown;"
+        print(f"{name:32s} {pm(r['top1']):>10s} {pm(r['top5']):>10s} {r['sim']/n:11.2f}")
+    print("\n± = 95% confidence margin; differences smaller than this are likely noise."
+          "\ntop-1/top-5 = exact structure (ignoring stereochemistry) is the first / among the five shown;"
           "\nsimilarity = Tanimoto of the first answer to the truth (1.0 = identical).")
 
 

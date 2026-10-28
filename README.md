@@ -43,11 +43,26 @@ python server.py        # then open http://localhost:5000
 | IR | `1750, 1692, 3300` | Peak wavenumbers in cm⁻¹ |
 | Formula | `C9H8O4` | Optional. Candidates with the wrong formula are filtered out |
 
-The model was trained on ¹³C intensities that encode each carbon's attached-H
-count × number of equivalent carbons (like DEPT). With that information the
-current model gets the exact structure for ~73% of held-out molecules; with
-bare ¹³C shifts it gets ~0%. Models retrained with the current code (input
-version 2) are trained to handle missing information instead.
+### Expected accuracy
+
+Measured with `benchmark.py` on 200 held-out molecules the model never trained
+on (simulated spectra with small shift errors added; stereochemistry ignored):
+
+| Input | Top answer correct | Correct answer in top 5 |
+|---|---|---|
+| ¹H (with multiplicity and integration) + ¹³C + formula | **73% ± 6** | **86% ± 5** |
+| ¹H + ¹³C with DEPT type and counts | 62% ± 7 | 79% ± 6 |
+| ¹H + ¹³C with DEPT type | 61% ± 7 | 79% ± 6 |
+| ¹H + ¹³C bare shifts | 56% ± 7 | 70% ± 6 |
+| ¹H bare shifts + ¹³C bare shifts | 25% ± 6 | 44% ± 7 |
+| ¹³C only, with DEPT type and counts | 23% ± 6 | 40% ± 7 |
+| ¹³C bare shifts only + formula | 27% ± 6 | 38% ± 7 |
+
+Unless marked "bare shifts", ¹H includes multiplicity and integration. What you
+enter matters more than anything else: give ¹H multiplicity and integration,
+¹³C DEPT type, and a molecular formula when you have them. The model was
+trained on simulated spectra, so expect somewhat lower accuracy on real
+experimental data.
 
 If `search_data/nmrshiftdb.parquet` is missing, rebuild it once from the SDF:
 ```bash
